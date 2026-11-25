@@ -10,6 +10,22 @@ Steady renders subtle, click-through peripheral motion cues along the left and r
 
 ---
 
+## Demo & Screenshots
+
+<p align="center">
+  <img src="docs/media/demo.gif" alt="Steady Wayland motion-cue overlay demo" width="760">
+</p>
+
+<p align="center">
+  <em>12-second driving cycle demo (Right Turn → Braking → Left Turn → Acceleration → Stopped Auto-Hide &amp; 1 Hz Power Save) · <a href="docs/media/demo.mp4">Download 30fps MP4 video (196 KB)</a></em>
+</p>
+
+| Desktop Wayland Overlay | Control Panel (Qt6) | Android Background Sender (~33 KB APK) |
+| :---: | :---: | :---: |
+| <img src="docs/media/desktop-overlay.png" alt="Desktop Wayland Overlay" width="380"> | <img src="docs/media/control-panel.png" alt="Steady Control Panel" width="230"> | <img src="docs/media/android-sender.png" alt="Android Steady Sender" width="200"> |
+
+---
+
 ## Features
 
 ### Desktop (Linux Wayland / Hyprland / Qt6)
