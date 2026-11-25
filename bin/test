@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+mkdir -p build/test
+/usr/lib/qt6/moc src/motion_engine.h -o build/test/moc_motion_engine.cpp
+/usr/lib/qt6/moc src/sensor_server.h -o build/test/moc_sensor_server.cpp
+
+g++ -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -std=gnu++17 -Wall -Wextra -fPIC \
+  -I/usr/include/qt6 -I/usr/include/qt6/QtCore -I/usr/include/qt6/QtNetwork \
+  tests/test_steady.cpp \
+  src/motion_engine.cpp src/sensor_server.cpp \
+  build/test/moc_motion_engine.cpp build/test/moc_sensor_server.cpp \
+  -lQt6Network -lQt6Core \
+  -o build/test/test_steady
+
+ASAN_OPTIONS=detect_leaks=0 ./build/test/test_steady

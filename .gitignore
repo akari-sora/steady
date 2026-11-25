@@ -1,0 +1,24 @@
+# Build outputs
+/build/
+/android/build/
+*.o
+*.moc
+*.apk
+*.pkg.tar.*
+Makefile
+Makefile.*
+
+# Local agent / IDE / editor metadata
+/.agy/
+/.vscode/
+/.idea/
+*.pro.user*
+*.swp
+*~
+
+# Signing keys & TLS certificates (never commit secrets)
+*.jks
+*.keystore
+*.pem
+*.key
+*.crt

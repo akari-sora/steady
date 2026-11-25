@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Steady
+GenericName=Motion Sickness Relief Overlay
+Comment=Peripheral motion cues for Wayland with phone IMU streaming
+Exec=steady
+Icon=steady
+Terminal=false
+Categories=Utility;Accessibility;
+Keywords=motion;sickness;overlay;imu;wayland;

@@ -1,0 +1,30 @@
+pkgname=steady
+pkgver=1.1.0
+pkgrel=1
+pkgdesc='Motion-sickness relief peripheral cues overlay for Wayland/Hyprland with Android IMU streaming'
+arch=('x86_64' 'aarch64')
+url='https://github.com/akari-sora/steady'
+license=('AGPL-3.0-or-later')
+depends=('qt6-base' 'qt6-declarative' 'qt6-wayland' 'layer-shell-qt' 'openssl' 'qrencode')
+makedepends=('gcc' 'make')
+
+build() {
+  cd "$startdir/.."
+  ./bin/build
+}
+
+check() {
+  cd "$startdir/.."
+  ./bin/test
+}
+
+package() {
+  cd "$startdir/.."
+  install -Dm755 build/steady "$pkgdir/usr/bin/steady"
+  install -Dm644 pkgbuild/steady.desktop "$pkgdir/usr/share/applications/steady.desktop"
+  install -Dm644 pkgbuild/steady.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/steady.svg"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  if [[ -f build/steady-sender.apk ]]; then
+    install -Dm644 build/steady-sender.apk "$pkgdir/usr/share/steady/steady-sender.apk"
+  fi
+}
