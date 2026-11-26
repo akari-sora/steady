@@ -12,13 +12,12 @@ ApplicationWindow {
     visible: true
     title: "Steady — 防暈車動態提示"
     color: theme.background
+    readonly property string fixedFontFamily: Qt.platform.os === "osx" ? "Menlo"
+                                              : Qt.platform.os === "windows" ? "Consolas" : "monospace"
 
     Material.theme: Material.Dark
     Material.accent: theme.accent
     Material.background: theme.background
-
-    // Closing the control window cleanly shuts down both Wayland overlay strips too.
-    onClosing: Qt.quit()
 
     Shortcut {
         sequences: ["Space"]
@@ -59,12 +58,13 @@ ApplicationWindow {
                         color: theme.foreground
                     }
                     Label {
-                        text: "Omarchy 防暈眩動態覆蓋層（滑鼠穿透）"
+                        text: "防暈眩動態覆蓋層（滑鼠穿透）"
                         font.pixelSize: 12
                         color: theme.muted
                     }
                 }
                 Item { Layout.fillWidth: true }
+                Button { text: "離開 (Quit)"; onClicked: Qt.quit() }
                 Switch {
                     checked: motion.overlayEnabled
                     text: motion.overlayEnabled ? "開啟" : "關閉"
@@ -134,6 +134,8 @@ ApplicationWindow {
                         spacing: 4
                         Label {
                             text: "訊號來源：" + motion.imuSource
+                            textFormat: Text.PlainText
+                            maximumLineCount: 1
                             font.pixelSize: 13
                             font.bold: true
                             color: theme.foreground
@@ -141,9 +143,17 @@ ApplicationWindow {
                             Layout.fillWidth: true
                         }
                         Label {
+                            visible: server.lockedSource.length > 0
+                            text: "鎖定來源：" + server.lockedSource
+                            textFormat: Text.PlainText
+                            font.pixelSize: 12
+                            color: theme.muted
+                            Layout.fillWidth: true
+                        }
+                        Label {
                             text: "橫向 G: " + motion.ax.toFixed(2) + " m/s²   縱向 G: " + motion.ay.toFixed(2) + " m/s²"
                             font.pixelSize: 12
-                            font.family: "monospace"
+                            font.family: root.fixedFontFamily
                             color: theme.muted
                         }
                         Label {
@@ -160,6 +170,17 @@ ApplicationWindow {
             }
 
             // Simulation Controls
+            RowLayout {
+                visible: motion.simulationPaused
+                Layout.fillWidth: true
+                Label {
+                    text: "已閒置 10 分鐘，模擬已暫停。"
+                    color: theme.muted
+                    Layout.fillWidth: true
+                }
+                Button { text: "繼續模擬"; onClicked: motion.resumeSimulation() }
+            }
+
             Rectangle {
                 visible: motion.mode === "sim"
                 Layout.fillWidth: true
@@ -273,22 +294,15 @@ ApplicationWindow {
                             height: 148
                             radius: 8
                             color: "#ffffff"
-                            visible: server.activeQrPath.length > 0
+                            visible: server.activeQrUrl.length > 0
                             Image {
                                 id: qrImage
                                 anchors.fill: parent
                                 anchors.margins: 6
                                 cache: false
-                                source: server.activeQrPath
+                                source: server.activeQrUrl
                                 fillMode: Image.PreserveAspectFit
                                 smooth: false
-                            }
-                            Connections {
-                                target: server
-                                function onEndpointsChanged() {
-                                    qrImage.source = ""
-                                    qrImage.source = server.activeQrPath
-                                }
                             }
                         }
 
@@ -296,14 +310,17 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             spacing: 6
                             Label {
-                                text: "網址：" + (server.useTailscaleQr && server.tailscaleUrl.length > 0 ? server.tailscaleUrl : server.lanUrl)
-                                font.family: "monospace"
+                                visible: server.lanUrl.length > 0 || server.tailscaleUrl.length > 0
+                                text: "網址：" + (server.useTailscaleQr && server.tailscaleUrl.length > 0
+                                              ? server.tailscaleUrl : server.lanUrl)
+                                font.family: root.fixedFontFamily
                                 font.pixelSize: 12
                                 color: theme.accent
                                 wrapMode: Text.WrapAnywhere
                                 Layout.fillWidth: true
                             }
                             Label {
+                                visible: server.activeQrUrl.length > 0
                                 text: "1. 手機掃描 QR，首次瀏覽器提示自簽憑證點「繼續前往」\n2. 點「下載 Android 背景版 APK」安裝，之後可縮小、切 App、關螢幕\n3. 開啟 App 點「開始背景串流」即自動切換成手機感應模式"
                                 font.pixelSize: 12
                                 color: theme.muted
@@ -311,12 +328,28 @@ ApplicationWindow {
                                 Layout.fillWidth: true
                             }
                             Label {
+                                visible: server.udpReady
                                 text: "UDP :" + server.udpPort + "（支援自動搜尋區網 / Tailscale / HyperIMU）"
                                 font.pixelSize: 11
                                 color: theme.muted
                                 wrapMode: Text.WordWrap
                                 Layout.fillWidth: true
                             }
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        CheckBox {
+                            text: "鎖定單一手機來源"
+                            checked: server.sourceLockEnabled
+                            onToggled: server.sourceLockEnabled = checked
+                        }
+                        Item { Layout.fillWidth: true }
+                        Button {
+                            text: "釋放來源 (Release)"
+                            enabled: server.lockedSource.length > 0
+                            onClicked: server.releaseSource()
                         }
                     }
 
@@ -335,6 +368,15 @@ ApplicationWindow {
                         }
                     }
                 }
+            }
+
+            Label {
+                text: server.statusMessage
+                textFormat: Text.PlainText
+                font.pixelSize: 11
+                color: theme.muted
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
             }
 
             // Visual Tuning Card
@@ -389,7 +431,7 @@ ApplicationWindow {
                             onToggled: motion.autoHide = checked
                         }
                         CheckBox {
-                            text: "使用 Omarchy 主題色"
+                            text: theme.omarchy ? "使用 Omarchy 主題色" : "使用系統強調色"
                             checked: motion.useAccentColor
                             onToggled: motion.useAccentColor = checked
                         }

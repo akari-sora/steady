@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+root=$PWD
+version=$(cat version.txt)
+platform="$(uname -s):$(uname -m)"
+
+case "$platform" in
+    Linux:x86_64) archive="steady-$version-linux-x86_64.tar.gz" ;;
+    Darwin:arm64) archive="steady-$version-macos-arm64.zip" ;;
+    *) printf 'Unsupported release platform: %s\n' "$platform" >&2; exit 2 ;;
+esac
+
+mkdir -p dist
+work=$(mktemp -d "$root/dist/.package.XXXXXX")
+trap 'rm -rf "$work"' EXIT
+build="$work/build"
+if [[ "$platform" == Linux:* ]]; then
+    stage="$work/steady-$version"
+else
+    stage="$work/files"
+fi
+licenses="$stage/THIRD-PARTY-LICENSES"
+mkdir -p "$build" "$licenses"
+cp LICENSE README.md "$stage/"
+cp packaging/THIRD-PARTY-NOTICES.md "$licenses/README.md"
+cp packaging/licenses/* "$licenses/"
+cp third_party/qrcodegen/LICENSE "$licenses/qrcodegen-MIT.txt"
+
+qmake="$(command -v qmake6 || command -v qmake)"
+jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf 1)"
+release=("CONFIG-=debug_and_release" "CONFIG-=debug" "CONFIG+=release")
+build_release() {
+    "$qmake" "$root/steady.pro" -o "$build/Makefile" "${release[@]}" "$@"
+    make -C "$build" -f Makefile -j"$jobs"
+    "$qmake" "$root/steady-cli.pro" -o "$build/Makefile.cli" "${release[@]}" "$@"
+    make -C "$build" -f Makefile.cli -j"$jobs"
+}
+
+if [[ "$platform" == Linux:* ]]; then
+    build_release "$@"
+    layershell_required=true
+    for argument in "$@"; do
+        if [[ "$argument" == *no_layershell* ]]; then layershell_required=false; fi
+    done
+    if $layershell_required && ! ldd "$build/steady" | grep -q 'LayerShellQt'; then
+        printf 'Release GUI is not linked to LayerShellQt; use CONFIG+=no_layershell only intentionally.\n' >&2
+        exit 1
+    fi
+    cp "$build/steady" "$build/steady-cli" pkgbuild/steady.desktop pkgbuild/steady.svg "$stage/"
+    find "$stage" -maxdepth 1 \( -type f -o -type l \) -print \
+        | sed "s#$stage/##" | LC_ALL=C sort > "$licenses/BUNDLED-FILES.txt"
+    tar -czf "$work/$archive" -C "$work" "steady-$version"
+else
+    build_release QMAKE_MACOSX_DEPLOYMENT_TARGET=27.0 CONFIG+=steady_bundle "$@"
+    app="$stage/Steady.app"
+    ditto "$build/steady.app" "$app"
+    cli="$app/Contents/MacOS/steady-cli"
+    cp "$build/steady-cli" "$cli"
+    deploy_libpaths=("$("$qmake" -query QT_INSTALL_LIBS)")
+    # Homebrew installs QtSvg as a separate formula.  QML plugins refer to it
+    # through @rpath, so give macdeployqt the formula's library directory up
+    # front instead of relying on its later QML-import pass to discover it.
+    if command -v brew >/dev/null 2>&1; then
+        qtsvg_prefix=$(brew --prefix qtsvg 2>/dev/null || true)
+        if [[ -d "$qtsvg_prefix/lib" ]]; then
+            deploy_libpaths+=("$qtsvg_prefix/lib")
+            # Qt 6.12's QML import pass does not consistently apply repeated
+            # -libpath arguments when resolving a plugin's @rpath dependency.
+            # Seed the framework in the bundle so that pass is deterministic.
+            if [[ -d "$qtsvg_prefix/lib/QtSvg.framework" ]]; then
+                mkdir -p "$app/Contents/Frameworks"
+                ditto "$qtsvg_prefix/lib/QtSvg.framework" "$app/Contents/Frameworks/QtSvg.framework"
+            fi
+        fi
+    fi
+    deploy_args=()
+    for libpath in "${deploy_libpaths[@]}"; do
+        deploy_args+=("-libpath=$libpath")
+    done
+    deploy_log="$work/macdeployqt.log"
+    "$("$qmake" -query QT_INSTALL_BINS)/macdeployqt" "$app" -no-codesign \
+        "${deploy_args[@]}" -qmldir="$root/src" \
+        -qmlimport="$("$qmake" -query QT_INSTALL_QML)" -executable="$cli" 2>&1 | tee "$deploy_log"
+    unknown_deploy_errors=$(grep '^ERROR:' "$deploy_log" \
+        | grep -Ev '^ERROR: (Cannot resolve rpath "@rpath/QtSvg\.framework/Versions/A/QtSvg"| using QList\()' || true)
+    if [[ -n "$unknown_deploy_errors" ]]; then
+        printf '%s\n' "$unknown_deploy_errors" >&2
+        printf 'macdeployqt reported unresolved deployment errors.\n' >&2
+        exit 1
+    fi
+    if grep -q '^ERROR:' "$deploy_log" &&
+       [[ ! -f "$app/Contents/Frameworks/QtSvg.framework/Versions/A/QtSvg" ]]; then
+        printf 'macdeployqt could not resolve QtSvg and the seeded framework is missing.\n' >&2
+        exit 1
+    fi
+    mv "$cli" "$stage/steady-cli"
+    cli="$stage/steady-cli"
+    while IFS= read -r dependency; do
+        install_name_tool -change "$dependency" "@rpath/${dependency#*/../Frameworks/}" "$cli"
+    done < <(otool -L "$cli" | awk '$1 ~ /^@(executable|loader)_path\/\.\.\/Frameworks\// {print $1}')
+    while IFS= read -r rpath; do
+        install_name_tool -delete_rpath "$rpath" "$cli"
+    done < <(otool -l "$cli" | awk '/cmd LC_RPATH/{r=1; next} r && $1=="path"{sub(/^ *path /,""); sub(/ \(offset [0-9]+\)$/,""); print; r=0}')
+    install_name_tool -add_rpath '@executable_path/Steady.app/Contents/Frameworks' "$cli"
+
+    # macdeployqt can leave absolute install IDs and search paths in Homebrew builds.
+    while IFS= read -r -d '' binary; do
+        commands=$(otool -l "$binary" 2>/dev/null) || continue
+        if [[ "$binary" == "$app/Contents/Frameworks/"* ]] &&
+           awk '/cmd LC_ID_DYLIB/{id=1} id && $1=="name"{found=($2 ~ /^\//); exit} END{exit !found}' <<< "$commands"; then
+            install_name_tool -id "@rpath/${binary#"$app/Contents/Frameworks/"}" "$binary"
+        fi
+        while IFS= read -r dependency; do
+            case "$dependency" in
+                /System/Library/*|/usr/lib/*|@*) continue ;;
+                /*)
+                    relative=${dependency#*/lib/}
+                    target="$app/Contents/Frameworks/$relative"
+                    if [[ "$relative" == "$dependency" || ! -e "$target" ]]; then
+                        target=$(find "$app/Contents/Frameworks" -type f \
+                            -name "$(basename "$dependency")" -print -quit)
+                        [[ -n "$target" ]] || continue
+                        relative=${target#"$app/Contents/Frameworks/"}
+                    fi
+                    install_name_tool -change "$dependency" "@rpath/$relative" "$binary"
+                    ;;
+            esac
+        done < <(otool -L "$binary" | tail -n +2 | awk '{print $1}')
+        while IFS= read -r rpath; do
+            install_name_tool -delete_rpath "$rpath" "$binary"
+        done < <(awk '/cmd LC_RPATH/{r=1; next} r && $1=="path"{if ($0 ~ /^ *path \//) {sub(/^ *path /,""); sub(/ \(offset [0-9]+\)$/,""); print} r=0}' <<< "$commands")
+    done < <(
+        find "$app" -type f -print0
+        printf '%s\0' "$cli"
+    )
+
+    printf '[Paths]\nPrefix = .\nPlugins = PlugIns\nQmlImports = Resources/qml\n' > "$app/Contents/Resources/qt.conf"
+    printf '[Paths]\nPrefix = Steady.app/Contents\nPlugins = PlugIns\n' > "$stage/qt.conf"
+
+    # macdeployqt can return success after printing a resolution error. Verify
+    # the completed bundle instead of trusting its exit status alone.
+    dependency_error=0
+    while IFS= read -r -d '' binary; do
+        file -b "$binary" | grep -q 'Mach-O' || continue
+        while IFS= read -r dependency; do
+            case "$dependency" in
+                /System/Library/*|/usr/lib/*) ;;
+                @rpath/*)
+                    suffix=${dependency#@rpath/}
+                    if [[ -z "$(find "$app" -type f -path "*/$suffix" -print -quit)" ]]; then
+                        printf 'Unresolved bundled dependency: %s -> %s\n' "$binary" "$dependency" >&2
+                        dependency_error=1
+                    fi
+                    ;;
+                @loader_path/*)
+                    target="$(dirname "$binary")/${dependency#@loader_path/}"
+                    if [[ ! -e "$target" ]]; then
+                        printf 'Unresolved loader-relative dependency: %s -> %s\n' "$binary" "$dependency" >&2
+                        dependency_error=1
+                    fi
+                    ;;
+                @executable_path/*)
+                    if [[ "$binary" == "$app/"* ]]; then
+                        executable_dir="$app/Contents/MacOS"
+                    else
+                        executable_dir=$(dirname "$cli")
+                    fi
+                    target="$executable_dir/${dependency#@executable_path/}"
+                    if [[ ! -e "$target" ]]; then
+                        printf 'Unresolved executable-relative dependency: %s -> %s\n' "$binary" "$dependency" >&2
+                        dependency_error=1
+                    fi
+                    ;;
+                *)
+                    printf 'Absolute non-system dependency: %s -> %s\n' "$binary" "$dependency" >&2
+                    dependency_error=1
+                    ;;
+            esac
+        done < <(otool -L "$binary" | tail -n +2 | awk '{print $1}')
+    done < <(find "$app" "$cli" -type f -print0)
+    (( dependency_error == 0 )) || exit 1
+
+    find "$app" "$cli" "$stage/qt.conf" \( -type f -o -type l \) -print \
+        | sed "s#$stage/##" | LC_ALL=C sort > "$licenses/BUNDLED-FILES.txt"
+    codesign --force --deep -s - "$app"
+    codesign --force -s - "$cli"
+    ditto -c -k --norsrc --keepParent "$app" "$work/$archive"
+    (cd "$stage"; zip -qr "$work/$archive" steady-cli qt.conf LICENSE README.md THIRD-PARTY-LICENSES)
+fi
+
+mv -f "$work/$archive" "dist/$archive"
+(
+    cd dist
+    archives=()
+    for candidate in "steady-$version-linux-x86_64.tar.gz" \
+                     "steady-$version-macos-arm64.zip" \
+                     "steady-$version-windows-x64.zip"; do
+        [[ -f "$candidate" ]] && archives+=("$candidate")
+    done
+    if [[ "$platform" == Linux:* ]]; then
+        sha256sum "${archives[@]}"
+    else
+        shasum -a 256 "${archives[@]}"
+    fi
+) > "$work/SHA256SUMS.txt"
+mv -f "$work/SHA256SUMS.txt" dist/SHA256SUMS.txt
+printf 'Created dist/%s\n' "$archive"

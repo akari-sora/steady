@@ -1,17 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-
+qmake="$(command -v qmake6 || command -v qmake)"
+jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf 1)"
 mkdir -p build/test
-/usr/lib/qt6/moc src/motion_engine.h -o build/test/moc_motion_engine.cpp
-/usr/lib/qt6/moc src/sensor_server.h -o build/test/moc_sensor_server.cpp
-
-g++ -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -std=gnu++17 -Wall -Wextra -fPIC \
-  -I/usr/include/qt6 -I/usr/include/qt6/QtCore -I/usr/include/qt6/QtNetwork \
-  tests/test_steady.cpp \
-  src/motion_engine.cpp src/sensor_server.cpp \
-  build/test/moc_motion_engine.cpp build/test/moc_sensor_server.cpp \
-  -lQt6Network -lQt6Core \
-  -o build/test/test_steady
-
-ASAN_OPTIONS=detect_leaks=0 ./build/test/test_steady
+"$qmake" steady-cli.pro -o build/Makefile.cli
+make -C build -f Makefile.cli -j"$jobs"
+sanitizer_toolchain=()
+if [[ "$(uname -s)" == Darwin ]]; then
+    # An older selected Xcode can ship a sanitizer runtime incompatible with the host OS.
+    tools_dir=/Library/Developer/CommandLineTools/usr/bin
+    if [[ -x "$tools_dir/clang++" ]]; then
+        selected_version="$(xcrun clang++ --version | sed -n '1s/.*clang version \([0-9]*\).*/\1/p')"
+        tools_version="$("$tools_dir/clang++" --version | sed -n '1s/.*clang version \([0-9]*\).*/\1/p')"
+        if [[ -n "$selected_version" && -n "$tools_version" && "$tools_version" -gt "$selected_version" ]]; then
+            sanitizer_toolchain=(
+                "QMAKE_CC=$tools_dir/clang" "QMAKE_CXX=$tools_dir/clang++" "QMAKE_LINK=$tools_dir/clang++"
+                "OBJECTS_DIR=obj-clang-$tools_version"
+            )
+        fi
+    fi
+fi
+# Bash 3.2 treats an empty array as unset under nounset.
+"$qmake" tests/test_steady.pro -o build/test/Makefile CONFIG+=sanitize ${sanitizer_toolchain[@]+"${sanitizer_toolchain[@]}"} "$@"
+make -C build/test -j"$jobs"
+ASAN_OPTIONS="detect_leaks=0${ASAN_OPTIONS:+:$ASAN_OPTIONS}" ./build/test/test_steady
+mkdir -p build/test-overlay
+"$qmake" tests/test_overlay.pro -o build/test-overlay/Makefile CONFIG+=sanitize ${sanitizer_toolchain[@]+"${sanitizer_toolchain[@]}"} "$@"
+make -C build/test-overlay -j"$jobs"
+QT_QPA_PLATFORM=offscreen ASAN_OPTIONS="detect_leaks=0${ASAN_OPTIONS:+:$ASAN_OPTIONS}" ./build/test-overlay/test_overlay

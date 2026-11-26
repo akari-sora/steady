@@ -1,5 +1,6 @@
 # Build outputs
 /build/
+/dist/
 /android/build/
 *.o
 *.moc
@@ -10,6 +11,8 @@ Makefile.*
 
 # Local agent / IDE / editor metadata
 /.agy/
+/.omc/
+/.omg/
 /.vscode/
 /.idea/
 *.pro.user*

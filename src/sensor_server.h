@@ -3,7 +3,11 @@
 #include <QElapsedTimer>
 #include <QHash>
 #include <QObject>
-#include <QSslConfiguration>
+#include <QPointer>
+#include "qr_matrix.h"
+
+#include <QHostAddress>
+#include <QNetworkInterface>
 #include <QSslServer>
 #include <QSslSocket>
 #include <QString>
@@ -11,6 +15,9 @@
 #include <QUdpSocket>
 
 class MotionEngine;
+class QNetworkDatagram;
+class QFile;
+class QProcess;
 
 class SensorServer : public QObject {
     Q_OBJECT
@@ -18,74 +25,128 @@ class SensorServer : public QObject {
     Q_PROPERTY(QString tailscaleIp READ tailscaleIp NOTIFY endpointsChanged)
     Q_PROPERTY(QString lanUrl READ lanUrl NOTIFY endpointsChanged)
     Q_PROPERTY(QString tailscaleUrl READ tailscaleUrl NOTIFY endpointsChanged)
-    Q_PROPERTY(QString activeQrPath READ activeQrPath NOTIFY endpointsChanged)
-    Q_PROPERTY(int qrRevision READ qrRevision NOTIFY endpointsChanged)
+    Q_PROPERTY(QString activeQrUrl READ activeQrUrl NOTIFY endpointsChanged)
     Q_PROPERTY(bool useTailscaleQr READ useTailscaleQr WRITE setUseTailscaleQr NOTIFY endpointsChanged)
-    Q_PROPERTY(int httpsPort READ httpsPort CONSTANT)
+    Q_PROPERTY(int httpsPort READ httpsPort NOTIFY endpointsChanged)
     Q_PROPERTY(int udpPort READ udpPort CONSTANT)
+    Q_PROPERTY(bool udpReady READ udpReady NOTIFY endpointsChanged)
     Q_PROPERTY(bool httpsReady READ httpsReady NOTIFY endpointsChanged)
     Q_PROPERTY(QString statusMessage READ statusMessage NOTIFY endpointsChanged)
+    Q_PROPERTY(bool sourceLockEnabled READ sourceLockEnabled WRITE setSourceLockEnabled NOTIFY sourceLockEnabledChanged)
+    Q_PROPERTY(QString lockedSource READ lockedSource NOTIFY lockedSourceChanged)
 
 public:
-    explicit SensorServer(MotionEngine *engine, int httpsPort = 8765, int udpPort = 8766,
-                          QObject *parent = nullptr);
+    struct Options {
+        quint16 httpsPort = 8765;
+        quint16 udpPort = 8766;
+        bool httpsEnabled = true;
+        bool sourceLockEnabled = true;
+        QString cacheDirectory;
+        QString dataDirectory;
+        int httpHeaderTimeoutMs = 5000;
+    };
+
+    struct Addresses {
+        QString lan;
+        QString tailscale;
+    };
+
+    explicit SensorServer(MotionEngine *engine, const Options &options, QObject *parent = nullptr);
+    ~SensorServer() override;
+    static Addresses networkAddresses();
+    static QString pairingUrl(const QString &ip, quint16 port);
 
     QString lanIp() const { return m_lanIp; }
     QString tailscaleIp() const { return m_tailscaleIp; }
     QString lanUrl() const;
     QString tailscaleUrl() const;
-    QString activeQrPath() const;
-    int qrRevision() const { return m_qrRevision; }
+    QString activeQrUrl() const;
+    QrMatrix activeQr() const;
     bool useTailscaleQr() const { return m_useTailscaleQr; }
     void setUseTailscaleQr(bool v);
 
-    int httpsPort() const { return m_httpsPort; }
-    int udpPort() const { return m_udpPort; }
+    quint16 httpsPort() const { return m_httpsPort; }
+    quint16 udpPort() const { return m_udpPort; }
+    bool udpReady() const { return m_udp.state() == QAbstractSocket::BoundState; }
     bool httpsReady() const { return m_httpsReady; }
-    QString statusMessage() const { return m_statusMessage; }
-    int activeClientCount() const { return m_clients.size(); }
+    bool httpsStarting() const { return m_httpsStarting; }
+    bool httpsBindFailed() const { return m_httpsBindFailed; }
+    QString statusMessage() const;
+    qsizetype activeClientCount() const { return m_clients.size(); }
+    bool sourceLockEnabled() const { return m_options.sourceLockEnabled; }
+    void setSourceLockEnabled(bool enabled);
+    QString lockedSource() const;
+    Q_INVOKABLE bool releaseSource();
 
     Q_INVOKABLE void refreshNetwork();
 
 signals:
     void endpointsChanged();
+    void sourceLockEnabledChanged();
+    void lockedSourceChanged();
 
 private:
     struct ClientState {
         bool isWebSocket = false;
+        bool closing = false;
         QByteArray buffer;
         qint64 lastActivityMs = 0;
+        qint64 headerDeadlineMs = 0;
     };
 
     void startUdp();
     void startHttps();
-    bool ensureSelfSignedCert(const QString &certPath, const QString &keyPath);
-    void regenerateQrCodesAsync();
-    void spawnQrJob(const QString &url, const QString &outPath, bool isTailscale);
+    void listenHttps(const QSslConfiguration &configuration);
+    void finishHttps(const QString &status, bool ready = false);
+    QString activePairingUrl() const;
     void handleUdpDatagrams();
+    QString discoveryAddress(const QNetworkDatagram &request) const;
     void handleClientData(QSslSocket *sock);
     bool handleHttpRequest(QSslSocket *sock, const QByteArray &req);
     bool handleWebSocketFrames(QSslSocket *sock, ClientState &st);
+    bool queueResponse(QSslSocket *sock, const QByteArray &data);
+    void closeClient(QSslSocket *sock, const QByteArray &response = {});
+    void armHeaderDeadline(QSslSocket *sock);
+    void streamApk(QSslSocket *sock, QFile *file);
     void removeClient(QSslSocket *sock);
     void sweepIdleClients();
-    void parseImuPayload(const QByteArray &payload, const QString &source);
+    enum class Transport { Udp, Https, WebSocket };
+    bool sourceAllowed(const QHostAddress &address) const;
+    void ingestSample(const QHostAddress &address, double ax, double ay, double az,
+                      double gx, double gy, double gz, bool gravityIncluded, const QString &label, bool idle = false);
+    void parseImuPayload(const QByteArray &payload, Transport transport, const QHostAddress &address);
     QByteArray buildPhoneHtml() const;
 
     MotionEngine *m_engine;
+    Options m_options;
     QUdpSocket m_udp;
+    bool m_udpDrainQueued = false;
     QSslServer m_https;
+    QPointer<QProcess> m_certificateProcess;
     QHash<QSslSocket *, ClientState> m_clients;
     QElapsedTimer m_uptimeClock;
+    QElapsedTimer m_networkRefreshClock;
+    QList<QNetworkInterface> m_interfaces;
     QTimer m_sweepTimer;
+    QHostAddress m_activeSource;
+    QHostAddress m_previousSource;
+    QHostAddress m_releasedSource;
+    qint64 m_releasedUntilMs = 0;
+    struct DiscoveryWindow {
+        qint64 startMs = 0;
+        int replies = 0;
+    };
+    // Per requesting address, so one noisy host cannot use up everyone's replies.
+    QHash<QHostAddress, DiscoveryWindow> m_discoveryWindows;
 
     QString m_lanIp;
     QString m_tailscaleIp;
-    QString m_lanQrPath;
-    QString m_tsQrPath;
     int m_qrRevision = 0;
     bool m_useTailscaleQr = false;
-    int m_httpsPort = 8765;
-    int m_udpPort = 8766;
+    quint16 m_httpsPort;
+    quint16 m_udpPort;
     bool m_httpsReady = false;
-    QString m_statusMessage;
+    bool m_httpsStarting;
+    bool m_httpsBindFailed = false;
+    QString m_httpsStatus;
 };

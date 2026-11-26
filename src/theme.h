@@ -11,6 +11,7 @@ class Theme : public QObject {
     Q_PROPERTY(QColor background READ background NOTIFY changed)
     Q_PROPERTY(QColor surface READ surface NOTIFY changed)
     Q_PROPERTY(QColor foreground READ foreground NOTIFY changed)
+    Q_PROPERTY(bool omarchy READ omarchy NOTIFY changed)
     Q_PROPERTY(QColor muted READ muted NOTIFY changed)
 
 public:
@@ -20,16 +21,19 @@ public:
     QColor background() const { return m_background; }
     QColor surface() const { return m_surface; }
     QColor foreground() const { return m_foreground; }
+    bool omarchy() const { return m_omarchy; }
     QColor muted() const { return m_muted; }
 
 signals:
     void changed();
 
 private:
+    bool eventFilter(QObject *watched, QEvent *event) override;
     void reload();
     void armWatcher();
 
     QString m_colorsPath;
+    bool m_omarchy = false;
     QFileSystemWatcher m_watcher;
     QColor m_accent{"#FFD60A"};
     QColor m_background{"#0c0b0c"};

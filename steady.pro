@@ -1,27 +1,32 @@
-QT += quick quickcontrols2 network
-CONFIG += c++17
+QT += quick quickcontrols2
+macos:contains(CONFIG, steady_bundle) {
+    CONFIG += app_bundle
+    QMAKE_TARGET_BUNDLE_PREFIX = dev.omarchy
+    QMAKE_INFO_PLIST = $$PWD/pkgbuild/Info.plist
+} else {
+    CONFIG -= app_bundle
+}
 
 TARGET = steady
 TEMPLATE = app
 
-LIBS += -lLayerShellQtInterface
+include(src/core.pri)
 
-SOURCES += \
-    src/main.cpp \
-    src/theme.cpp \
-    src/motion_engine.cpp \
-    src/overlay_window.cpp \
-    src/sensor_server.cpp
+linux:!contains(CONFIG, no_layershell) {
+    DEFINES += STEADY_LAYER_SHELL
+    LIBS += -lLayerShellQtInterface
+}
+macos {
+    OBJECTIVE_SOURCES += src/overlay_window_mac.mm
+    LIBS += -framework AppKit
+}
+win32: LIBS += -luser32
 
-HEADERS += \
-    src/theme.h \
-    src/motion_engine.h \
-    src/overlay_window.h \
-    src/sensor_server.h
-
+SOURCES += src/main.cpp src/theme.cpp src/overlay_window.cpp
+HEADERS += src/theme.h src/overlay_window.h
 RESOURCES += src/resources.qrc
 
 DESTDIR = .
-OBJECTS_DIR = obj
-MOC_DIR = moc
+OBJECTS_DIR = obj/gui
+MOC_DIR = moc/gui
 RCC_DIR = rcc

@@ -5,11 +5,14 @@
 #include <QString>
 #include <QTimer>
 
+class QSettings;
+
 class MotionEngine : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool overlayEnabled READ overlayEnabled WRITE setOverlayEnabled NOTIFY overlayEnabledChanged)
     Q_PROPERTY(QString mode READ mode WRITE setMode NOTIFY modeChanged)
     Q_PROPERTY(QString simPreset READ simPreset WRITE setSimPreset NOTIFY simPresetChanged)
+    Q_PROPERTY(bool simulationPaused READ simulationPaused NOTIFY simulationPausedChanged)
     Q_PROPERTY(int dotPairs READ dotPairs WRITE setDotPairs NOTIFY visualsChanged)
     Q_PROPERTY(double dotSize READ dotSize WRITE setDotSize NOTIFY visualsChanged)
     Q_PROPERTY(double opacity READ opacity WRITE setOpacity NOTIFY visualsChanged)
@@ -32,7 +35,17 @@ class MotionEngine : public QObject {
     Q_PROPERTY(QString calibrationHint READ calibrationHint NOTIFY imuStatusChanged)
 
 public:
-    explicit MotionEngine(QObject *parent = nullptr);
+    enum class Timing { Realtime, Manual };
+    enum class SimulationTimeout { Enabled, Disabled };
+    explicit MotionEngine(Timing timing = Timing::Realtime, QObject *parent = nullptr);
+    MotionEngine(Timing timing, SimulationTimeout timeout, QObject *parent = nullptr);
+
+    // In manual mode this also advances the idle and phone watchdog clocks.
+    void advance(double seconds);
+
+    struct Acceleration { double x; double y; };
+    static Acceleration simulationSample(const QString &preset, double seconds);
+    static bool validPreset(const QString &preset);
 
     bool overlayEnabled() const { return m_overlayEnabled; }
     void setOverlayEnabled(bool v);
@@ -42,6 +55,9 @@ public:
 
     QString simPreset() const { return m_simPreset; }
     void setSimPreset(const QString &p);
+    bool simulationPaused() const { return m_simulationPaused; }
+    void noteInteraction();
+    Q_INVOKABLE void resumeSimulation();
 
     int dotPairs() const { return m_dotPairs; }
     void setDotPairs(int v);
@@ -76,19 +92,26 @@ public:
     QString imuSource() const { return m_imuSource; }
     QString calibrationHint() const { return m_calibrationHint; }
 
-    bool isAnimationTimerActive() const { return m_timer.isActive(); }
+    static constexpr double minimumVisibleOpacity = 0.01;
+
+    bool isAnimationTimerActive() const { return m_animationActive; }
 
     Q_INVOKABLE void triggerImpulse(double gx, double gy);
     Q_INVOKABLE void calibrate();
     Q_INVOKABLE void resetDefaults();
+    void loadSettings(const QSettings &settings);
+    void saveSettings(QSettings &settings) const;
 
-    void ingestImu(double ax, double ay, double az, double gx, double gy, double gz,
-                   bool gravityIncluded, const QString &source);
+    bool ingestImu(double ax, double ay, double az, double gx, double gy, double gz,
+                   bool gravityIncluded, const QString &source, bool idle = false);
+    void disconnectImu();
+    void resetImuCalibration();
 
 signals:
     void overlayEnabledChanged();
     void modeChanged();
     void simPresetChanged();
+    void simulationPausedChanged();
     void visualsChanged();
     void frameUpdated();
     void telemetryUpdated();
@@ -96,23 +119,39 @@ signals:
 
 private:
     void step();
+    void animate(double dt);
+    void beginFade();
+    void cancelFadeDelay();
+    qint64 nowNs() const;
+    qint64 nowMs() const { return nowNs() / 1'000'000; }
     void checkImuWatchdog();
     void wakeAnimationTimer();
     void updateTimerState();
     bool isContinuousSim() const;
+    void updateSimulationTimeout();
+    void pauseSimulation();
 
+    const Timing m_timing;
+    const SimulationTimeout m_simulationTimeout;
     QTimer m_timer;
+    QTimer m_fadeDelay;
     QTimer m_watchdogTimer;
+    QTimer m_simTimeout;
     QElapsedTimer m_clock;
-    QElapsedTimer m_hzClock;
-    QElapsedTimer m_telemetryClock;
+    bool m_animationActive = false;
+    qint64 m_manualNs = 0;
+    qint64 m_fadeAtNs = -1;
+    qint64 m_lastHzMs = 0;
+    qint64 m_lastTelemetryMs = 0;
     qint64 m_lastStepNs = 0;
-    qint64 m_lastImuMs = 0;
+    qint64 m_lastImuMs = -1;
+    qint64 m_simDeadlineMs = -1;
     double m_simTime = 0.0;
 
     bool m_overlayEnabled = true;
-    QString m_mode = QStringLiteral("sim");
+    QString m_mode = QStringLiteral("phone");
     QString m_simPreset = QStringLiteral("city");
+    bool m_simulationPaused = false;
 
     int m_dotPairs = 4;
     double m_dotSize = 12.0;
@@ -125,6 +164,7 @@ private:
     // Gravity estimation & calibration for phone IMU
     bool m_hasGravity = false;
     bool m_lastGravityIncluded = false;
+    double m_lastImuX = 0.0, m_lastImuY = 0.0, m_lastImuZ = 0.0;
     double m_gravX = 0.0, m_gravY = 0.0, m_gravZ = 9.81;
     double m_biasX = 0.0, m_biasY = 0.0;
     double m_rawLinX = 0.0, m_rawLinY = 0.0;
@@ -139,7 +179,7 @@ private:
     double m_velX = 0.0, m_velY = 0.0;
     double m_scrollY = 0.0;
     double m_stillSeconds = 0.0;
-    double m_currentAlpha = 1.0;
+    double m_currentAlpha = 0.0;
 
     // Last emitted visual values to avoid redundant Wayland SHM commits
     double m_lastEmitX = -999.0;
@@ -150,6 +190,6 @@ private:
     int m_packetCount = 0;
     int m_imuHz = 0;
     bool m_phoneConnected = false;
-    QString m_imuSource = QStringLiteral("模擬訊號 (Simulation)");
+    QString m_imuSource = QStringLiteral("等待手機訊號...");
     QString m_calibrationHint = QStringLiteral("尚未校正");
 };
