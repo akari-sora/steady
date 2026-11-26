@@ -107,6 +107,7 @@ private:
     bool queueResponse(QSslSocket *sock, const QByteArray &data);
     void closeClient(QSslSocket *sock, const QByteArray &response = {});
     void armHeaderDeadline(QSslSocket *sock);
+    void scheduleHeaderDeadline(QSslSocket *sock, qint64 deadlineMs, int delayMs);
     void streamApk(QSslSocket *sock, QFile *file);
     void removeClient(QSslSocket *sock);
     void sweepIdleClients();

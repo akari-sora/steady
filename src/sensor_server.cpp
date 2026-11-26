@@ -554,12 +554,21 @@ void SensorServer::armHeaderDeadline(QSslSocket *sock)
     if (it == m_clients.end() || it->isWebSocket || it->closing) return;
     const int timeoutMs = std::max(1, m_options.httpHeaderTimeoutMs);
     it->headerDeadlineMs = m_uptimeClock.elapsed() + timeoutMs;
-    // A coarse timer may fire early; the deadline check below would then skip the
-    // removal and leave the request to the much longer idle sweep.
-    QTimer::singleShot(timeoutMs, Qt::PreciseTimer, sock, [this, sock]() {
+    scheduleHeaderDeadline(sock, it->headerDeadlineMs, timeoutMs);
+}
+
+void SensorServer::scheduleHeaderDeadline(QSslSocket *sock, qint64 deadlineMs, int delayMs)
+{
+    QTimer::singleShot(delayMs, Qt::PreciseTimer, sock, [this, sock, deadlineMs]() {
         const auto current = m_clients.constFind(sock);
         if (current == m_clients.cend() || current->isWebSocket || current->closing) return;
-        if (m_uptimeClock.elapsed() >= current->headerDeadlineMs) removeClient(sock);
+        // A later request on the same connection has its own deadline and timer.
+        if (current->headerDeadlineMs != deadlineMs) return;
+        // Timers can fire slightly early; wait out the rest instead of leaving the
+        // request to the much longer idle sweep.
+        const qint64 remainingMs = deadlineMs - m_uptimeClock.elapsed();
+        if (remainingMs > 0) scheduleHeaderDeadline(sock, deadlineMs, int(remainingMs));
+        else removeClient(sock);
     });
 }
 

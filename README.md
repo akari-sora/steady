@@ -194,8 +194,9 @@ export STEADY_KS_PASS="your-strong-password"
 > sudo ufw allow 8766/udp
 > ```
 >
-> Windows: the first launch may show a Windows Security prompt; choose **Allow** for the network type you are on (home Wi-Fi is often set to *Public*). If you chose **Cancel**, Windows keeps block rules for the program, and those win over any allow rule added later: open **Windows Security → Firewall & network protection → Allow an app through firewall**, find Steady and tick the network type, or delete the blocked entries for it in **Advanced settings → Inbound Rules**. If no prompt ever appeared, add the rules from an administrator Command Prompt, using the full path of the executable you run (`steady.exe` or `steady-cli.exe`):
+> Windows: the first launch may show a Windows Security prompt. Choosing **Allow** for the network type you are on (home Wi-Fi is often set to *Public*) opens the ports, but only from an administrator account. If you chose **Cancel**, answered without administrator rights, or never saw a prompt, the program stays blocked, and a block recorded by the prompt wins over allow rules added later. From an administrator Command Prompt, remove the program's existing inbound rules and add the two allow rules, using the full path of the executable you run (`steady.exe` or `steady-cli.exe`):
 > ```bat
+> netsh advfirewall firewall delete rule name=all dir=in program="C:\path\to\steady.exe"
 > netsh advfirewall firewall add rule name="Steady UDP" dir=in action=allow program="C:\path\to\steady.exe" protocol=UDP localport=8766 remoteip=LocalSubnet
 > netsh advfirewall firewall add rule name="Steady pairing" dir=in action=allow program="C:\path\to\steady.exe" protocol=TCP localport=8765 remoteip=LocalSubnet
 > ```
