@@ -560,7 +560,8 @@ void testTlsRegressions(const SensorServer::Options &options)
     {
         MotionEngine deadlineEngine(MotionEngine::Timing::Manual);
         SensorServer::Options deadlineOptions = options;
-        deadlineOptions.httpHeaderTimeoutMs = 250;
+        // Counted from accept, so it must outlast a cold TLS handshake (slow on a first run on Windows).
+        deadlineOptions.httpHeaderTimeoutMs = 1500;
         SensorServer deadlineServer(&deadlineEngine, deadlineOptions);
         waitForHttps(deadlineServer);
         QSslSocket partial;
@@ -574,7 +575,7 @@ void testTlsRegressions(const SensorServer::Options &options)
             QObject::connect(&timeout, &QTimer::timeout, &wait, &QEventLoop::quit);
             partial.write("GET /");
             partial.flush();
-            timeout.start(3000);
+            timeout.start(6000);
             wait.exec();
         }
         // The client can see the disconnect before the server has handled its own
