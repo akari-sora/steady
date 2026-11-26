@@ -560,7 +560,9 @@ void testTlsRegressions(const SensorServer::Options &options)
     {
         MotionEngine deadlineEngine(MotionEngine::Timing::Manual);
         SensorServer::Options deadlineOptions = options;
-        // Counted from accept, so it must outlast a cold TLS handshake (slow on a first run on Windows).
+        // The deadline starts when the server side of the handshake completes. The
+        // client can report "encrypted" noticeably later on a cold first run
+        // (seen on Windows), so the deadline must leave room for that.
         deadlineOptions.httpHeaderTimeoutMs = 1500;
         SensorServer deadlineServer(&deadlineEngine, deadlineOptions);
         waitForHttps(deadlineServer);

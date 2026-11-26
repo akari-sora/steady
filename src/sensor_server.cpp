@@ -554,7 +554,9 @@ void SensorServer::armHeaderDeadline(QSslSocket *sock)
     if (it == m_clients.end() || it->isWebSocket || it->closing) return;
     const int timeoutMs = std::max(1, m_options.httpHeaderTimeoutMs);
     it->headerDeadlineMs = m_uptimeClock.elapsed() + timeoutMs;
-    QTimer::singleShot(timeoutMs, sock, [this, sock]() {
+    // A coarse timer may fire early; the deadline check below would then skip the
+    // removal and leave the request to the much longer idle sweep.
+    QTimer::singleShot(timeoutMs, Qt::PreciseTimer, sock, [this, sock]() {
         const auto current = m_clients.constFind(sock);
         if (current == m_clients.cend() || current->isWebSocket || current->closing) return;
         if (m_uptimeClock.elapsed() >= current->headerDeadlineMs) removeClient(sock);
@@ -603,7 +605,12 @@ void SensorServer::handleUdpDatagrams()
                 const qint64 nowMs = m_uptimeClock.elapsed();
                 if (m_discoveryWindows.size() >= kMaxDiscoveryRequesters
                     && !m_discoveryWindows.contains(requester)) {
-                    m_discoveryWindows.clear();
+                    // Drop finished windows first so live counters survive. If every
+                    // entry is live, start over: a new phone must still get an answer.
+                    m_discoveryWindows.removeIf([nowMs](const auto &entry) {
+                        return nowMs - entry.value().startMs >= kDiscoveryWindowMs;
+                    });
+                    if (m_discoveryWindows.size() >= kMaxDiscoveryRequesters) m_discoveryWindows.clear();
                 }
                 DiscoveryWindow &window = m_discoveryWindows[requester];
                 if (nowMs - window.startMs >= kDiscoveryWindowMs) {

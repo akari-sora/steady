@@ -186,11 +186,22 @@ export STEADY_KS_PASS="your-strong-password"
 2. Scan the QR code from your phone (accept the local self-signed certificate once) and tap **Download Android APK**, or sideload `build/steady-sender.apk` via LocalSend / `adb install`.
 3. Open **Steady Sender** on your phone, tap **自動搜尋同區網電腦** (or enter your Tailscale IP), and tap **開始背景串流**. You can now minimize the app or turn off the screen.
 
-> **Firewall note**: If using LAN Wi-Fi with `ufw` enabled, allow the local ports:
+> **Firewall note**: by default the phone reaches the desktop on UDP `8766` (motion data and discovery). The optional QR pairing page uses TCP `8765`. If the phone shows **desktop not reachable** while Steady is running, its probes are getting no reply, and the desktop's firewall is the usual cause. The phone pauses motion data after about 30 seconds without a reply, keeps probing, and stops its background service after five minutes.
+>
+> Linux with `ufw` enabled:
 > ```bash
 > sudo ufw allow 8765/tcp
 > sudo ufw allow 8766/udp
 > ```
+>
+> Windows: the first launch may show a Windows Security prompt; choose **Allow** for the network type you are on (home Wi-Fi is often set to *Public*). If you chose **Cancel**, Windows keeps block rules for the program, and those win over any allow rule added later: open **Windows Security → Firewall & network protection → Allow an app through firewall**, find Steady and tick the network type, or delete the blocked entries for it in **Advanced settings → Inbound Rules**. If no prompt ever appeared, add the rules from an administrator Command Prompt, using the full path of the executable you run (`steady.exe` or `steady-cli.exe`):
+> ```bat
+> netsh advfirewall firewall add rule name="Steady UDP" dir=in action=allow program="C:\path\to\steady.exe" protocol=UDP localport=8766 remoteip=LocalSubnet
+> netsh advfirewall firewall add rule name="Steady pairing" dir=in action=allow program="C:\path\to\steady.exe" protocol=TCP localport=8765 remoteip=LocalSubnet
+> ```
+> `remoteip=LocalSubnet` limits the rule to the desktop's own subnet. When the phone connects over Tailscale or another VPN, put the phone's VPN address (or that subnet) there instead; leaving `remoteip` out allows any sender.
+>
+> macOS: if the system firewall is on, macOS asks on the first incoming connection whether to allow Steady; allow it, or add the app under **System Settings → Network → Firewall → Options**.
 
 ---
 
@@ -212,6 +223,7 @@ Sources that send acceleration including gravity (`grav:true`) use a deliberatel
 ## Known limitations
 
 - **Windows overlay**: built, tested and checked for the native click-through, layered, topmost and no-activate window styles, but it has had less on-screen testing than Linux and macOS. Reports are welcome.
+- **Desktop firewall**: Steady does not add firewall rules itself. A desktop firewall that drops inbound UDP `8766` (the default port) makes the phone report *desktop not reachable* and pause sending; see the firewall note under *Pair Your Phone*.
 - **macOS archive**: the published arm64 archive needs macOS 27 or newer (see *Release archives*). Build from source with another Qt kit for older releases.
 - **Unsigned archives**: the macOS and Windows archives are not signed or notarized; see *Release archives* for the first-launch steps.
 - **Phones with a biased motion sensor**: the Android sender treats the phone as stationary when linear acceleration stays under `0.22 m/s²` and yaw rate under `0.08 rad/s` for four seconds. A phone whose sensor reads above that at rest never enters the stationary power-saving mode; streaming still works.

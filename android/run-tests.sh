@@ -15,6 +15,10 @@ if [[ -z "${JAVA_HOME:-}" ]]; then
   else
     JAVA_HOME="$(find "$HOME/.local/share/mise/installs/java" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort -V | tail -n 1 || true)"
   fi
+  # A stale or JRE-only directory must not hide a working JDK on PATH.
+  if [[ -n "$JAVA_HOME" && ! ( -x "$JAVA_HOME/bin/javac" && -x "$JAVA_HOME/bin/java" ) ]]; then
+    JAVA_HOME=""
+  fi
 fi
 
 JAVAC="${JAVA_HOME:+$JAVA_HOME/bin/}javac"
