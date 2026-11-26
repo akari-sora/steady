@@ -5,9 +5,15 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 
+# Resolve a JDK the same way build-apk.sh does when JAVA_HOME is not set:
+# macOS java_home first, then a mise-managed JDK, then whatever is on PATH.
 if [[ -z "${JAVA_HOME:-}" ]]; then
   if [[ -x /usr/libexec/java_home ]]; then
     JAVA_HOME="$(/usr/libexec/java_home -v 21 2>/dev/null || /usr/libexec/java_home 2>/dev/null || true)"
+  elif [[ -d "$HOME/.local/share/mise/installs/java/zulu-latest" ]]; then
+    JAVA_HOME="$HOME/.local/share/mise/installs/java/zulu-latest"
+  else
+    JAVA_HOME="$(find "$HOME/.local/share/mise/installs/java" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort -V | tail -n 1 || true)"
   fi
 fi
 
