@@ -2,6 +2,7 @@ package dev.omarchy.steadysender;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
@@ -36,9 +37,9 @@ import java.net.InetAddress;
 import java.net.InterfaceAddress;
 import java.net.NetworkInterface;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.Locale;
-import java.util.regex.Pattern;
 
 public class MainActivity extends Activity {
     private static final String PREFS = "steady_sender_prefs";
@@ -47,8 +48,6 @@ public class MainActivity extends Activity {
     private static final String KEY_LAN_IP = "lan_ip";
     private static final String KEY_TS_IP = "ts_ip";
     private static final String KEY_LANDSCAPE = "landscape";
-
-    private static final Pattern HOST_PATTERN = Pattern.compile("^[a-zA-Z0-9._:-]{1,128}$");
 
     private static final int COLOR_BG = 0xFF0C0B0C;
     private static final int COLOR_SURFACE = 0xFF181618;
@@ -75,6 +74,9 @@ public class MainActivity extends Activity {
     private EditText hostInput;
     private EditText portInput;
     private CheckBox landscapeCheck;
+    private AlertDialog confirmDialog;
+    private DeepLinkRequest pendingConfirm;
+    private String linkNote = "";
 
     // Pre-allocated drawables so refreshUi() never allocates drawables or forces idle redraws
     private GradientDrawable badgeRunningBg;
@@ -123,6 +125,7 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         refreshBatteryButton();
+        showPendingConfirm();
         refreshUi();
         uiHandler.removeCallbacks(pollTask);
         if (TelemetryState.running) {
@@ -136,53 +139,160 @@ public class MainActivity extends Activity {
         uiHandler.removeCallbacks(pollTask);
     }
 
+    @Override
+    protected void onDestroy() {
+        uiHandler.removeCallbacks(pollTask);
+        if (confirmDialog != null) {
+            confirmDialog.dismiss();
+            confirmDialog = null;
+        }
+        super.onDestroy();
+    }
+
     private void handleDeepLink(Intent intent) {
-        if (intent == null) return;
-        Uri data = intent.getData();
-        if (data == null || !"steady".equals(data.getScheme())) return;
-
-        String host = sanitizeHost(data.getQueryParameter("host"));
-        String lan = sanitizeHost(data.getQueryParameter("lan"));
-        String ts = sanitizeHost(data.getQueryParameter("ts"));
-        String portStr = data.getQueryParameter("port");
-
-        boolean updated = false;
-        SharedPreferences.Editor ed = prefs.edit();
-        if (lan != null) {
-            ed.putString(KEY_LAN_IP, lan);
-            updated = true;
-        }
-        if (ts != null) {
-            ed.putString(KEY_TS_IP, ts);
-            updated = true;
-        }
-        if (host != null) {
-            hostInput.setText(host);
-            ed.putString(KEY_HOST, host);
-            updated = true;
-        }
-        if (portStr != null) {
+        if (intent == null || isFinishing()) return;
+        try {
+            applyDeepLink(intent);
+        } catch (RuntimeException e) {
+            pendingConfirm = null;
+            linkNote = "已拒絕連線連結";
             try {
-                int p = Integer.parseInt(portStr.trim());
-                if (p >= 1 && p <= 65535) {
-                    portInput.setText(String.valueOf(p));
-                    ed.putInt(KEY_PORT, p);
-                    updated = true;
-                }
-            } catch (NumberFormatException ignored) {}
+                Toast.makeText(this, linkNote, Toast.LENGTH_LONG).show();
+                refreshUi();
+            } catch (RuntimeException ignored) {}
         }
+    }
 
-        if (updated) {
-            ed.apply();
-            updateChipLabels();
-            Toast.makeText(this, "已套用連線位址：" + hostInput.getText(), Toast.LENGTH_SHORT).show();
+    private void applyDeepLink(Intent intent) {
+        Uri data = intent.getData();
+        if (data == null) return;
+        boolean hierarchical = false;
+        String scheme = null;
+        String uriHost = null;
+        String host = null;
+        String port = null;
+        String lan = null;
+        String ts = null;
+        boolean queryUnreadable = false;
+        try {
+            scheme = data.getScheme();
+            hierarchical = data.isHierarchical();
+            if (!hierarchical) {
+                queryUnreadable = true;
+            } else {
+                uriHost = data.getHost();
+                host = data.getQueryParameter("host");
+                port = data.getQueryParameter("port");
+                lan = data.getQueryParameter("lan");
+                ts = data.getQueryParameter("ts");
+            }
+        } catch (RuntimeException e) {
+            queryUnreadable = true;
+            hierarchical = false;
+        }
+        final DeepLinkRequest req = DeepLinkRequest.parse(
+            hierarchical, scheme, uriHost, host, port, lan, ts, queryUnreadable
+        );
+        if (req == null) return;
+        if (!req.ok()) {
+            pendingConfirm = null;
+            linkNote = "已拒絕 " + req.error;
+            Toast.makeText(this, linkNote, Toast.LENGTH_LONG).show();
+            refreshUi();
+            return;
+        }
+        pendingConfirm = req;
+        if (hasWindowFocus()) showPendingConfirm();
+    }
+
+    private void showPendingConfirm() {
+        final DeepLinkRequest req = pendingConfirm;
+        if (req == null || isFinishing()) return;
+        String curHost = hostInput.getText().toString().trim();
+        String curPort = portInput.getText().toString().trim();
+        String curLan = prefs.getString(KEY_LAN_IP, "");
+        String curTs = prefs.getString(KEY_TS_IP, "");
+        if (!req.applyAllowed(curHost, curPort, curLan, curTs)) {
+            pendingConfirm = null;
+            linkNote = "已拒絕未完整顯示的連線";
+            Toast.makeText(this, linkNote, Toast.LENGTH_LONG).show();
+            refreshUi();
+            return;
+        }
+        pendingConfirm = null;
+        final String msg = req.confirmMessage(curHost, curPort, curLan, curTs);
+        if (confirmDialog != null) confirmDialog.dismiss();
+        confirmDialog = new AlertDialog.Builder(this)
+            .setTitle("確認連線目標")
+            .setMessage(msg)
+            .setPositiveButton("確認", (d, w) -> {
+                if (req.disclosed(msg)) applyConfirmed(req);
+            })
+            .setNegativeButton("取消", (d, w) -> { })
+            .create();
+        confirmDialog.show();
+    }
+
+    private void applyConfirmed(DeepLinkRequest req) {
+        if (isFinishing() || isDestroyed()) return;
+        if (req.host != null) hostInput.setText(req.host);
+        if (req.port > 0) portInput.setText(String.valueOf(req.port));
+        SharedPreferences.Editor ed = prefs.edit();
+        if (req.lan != null) ed.putString(KEY_LAN_IP, req.lan);
+        if (req.ts != null) ed.putString(KEY_TS_IP, req.ts);
+        ed.apply();
+        savePrefs();
+        updateChipLabels();
+        linkNote = "";
+        Toast.makeText(this, "已改為 " + hostInput.getText(), Toast.LENGTH_SHORT).show();
+        if (TelemetryState.running && (req.host != null || req.port > 0)) {
+            restartStream();
+        }
+        refreshUi();
+    }
+
+    /** Chip switches and discovery both show the destination before writing it. */
+    private void confirmHost(String host, String label) {
+        if (host == null) return;
+        final String next = host.trim();
+        if (next.isEmpty()) return;
+        final String cur = hostInput.getText().toString().trim();
+        final String port = portInput.getText().toString().trim();
+        final String msg = label
+            + "\nhost: " + (cur.isEmpty() ? "(空)" : cur) + " → " + next
+            + "\nport: " + port;
+        new AlertDialog.Builder(this)
+            .setTitle("確認連線目標")
+            .setMessage(msg)
+            .setPositiveButton("確認", (d, w) -> {
+                hostInput.setText(next);
+                savePrefs();
+                updateChipLabels();
+                if (TelemetryState.running) restartStream();
+            })
+            .setNegativeButton("取消", null)
+            .show();
+    }
+
+    private void restartStream() {
+        String host = sanitizeHost(hostInput.getText().toString());
+        if (host == null) return;
+        Intent start = new Intent(this, ImuService.class);
+        start.setAction(ImuService.ACTION_START);
+        start.putExtra(ImuService.EXTRA_HOST, host);
+        start.putExtra(ImuService.EXTRA_PORT, parsePort());
+        start.putExtra(ImuService.EXTRA_LANDSCAPE, landscapeCheck.isChecked());
+        try {
+            startForegroundService(start);
+        } catch (Exception e) {
+            TelemetryState.lastError = "無法改連線目標：" + e.getMessage();
         }
     }
 
     private static String sanitizeHost(String raw) {
         if (raw == null) return null;
         String s = raw.trim();
-        if (s.isEmpty() || !HOST_PATTERN.matcher(s).matches()) return null;
+        if (!HostCheck.isUsableSource(s)) return null;
         return s;
     }
 
@@ -216,7 +326,7 @@ public class MainActivity extends Activity {
         root.addView(title);
 
         TextView subtitle = new TextView(this);
-        subtitle.setText("省電背景 IMU 串流（活躍 25Hz · 靜止自動降 1Hz · 20 分鐘自動停止）");
+        subtitle.setText("省電背景 IMU 串流（行車 12.5Hz · 靜止 1Hz · 電腦無回應會停）");
         subtitle.setTextColor(COLOR_MUTED);
         subtitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         LinearLayout.LayoutParams subLp = new LinearLayout.LayoutParams(
@@ -296,8 +406,7 @@ public class MainActivity extends Activity {
             if (lan.isEmpty()) {
                 discoverOmarchy();
             } else {
-                hostInput.setText(lan);
-                savePrefs();
+                confirmHost(lan, "區網");
             }
         });
         LinearLayout.LayoutParams c1 = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
@@ -310,8 +419,7 @@ public class MainActivity extends Activity {
             if (ts.isEmpty()) {
                 Toast.makeText(this, "尚未記錄 Tailscale IP，請先按自動搜尋或輸入 IP", Toast.LENGTH_SHORT).show();
             } else {
-                hostInput.setText(ts);
-                savePrefs();
+                confirmHost(ts, "Tailscale");
             }
         });
         LinearLayout.LayoutParams c2 = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
@@ -367,7 +475,7 @@ public class MainActivity extends Activity {
         batCard.addView(batTitle);
 
         TextView batDesc = new TextView(this);
-        batDesc.setText("行車時以 25Hz + 感應器硬體批次傳送；停紅燈或靜止 4 秒自動降頻至 1Hz（省下 96% 無線電喚醒）；靜止 20 分鐘自動關閉。若擔心三星提前休眠，可點下方放行。");
+        batDesc.setText("行車時 25Hz 取樣、兩兩平均後以 12.5Hz 送出（批次 80ms）。靜止 4 秒只留加速度計並以 1Hz 送 idle。約每 10 秒探測電腦，3 次無回應就停止送樣，5 分鐘後關閉。若擔心三星提前休眠，可點下方放行。");
         batDesc.setTextColor(COLOR_MUTED);
         batDesc.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         LinearLayout.LayoutParams bdLp = new LinearLayout.LayoutParams(
@@ -421,6 +529,7 @@ public class MainActivity extends Activity {
     }
 
     private void onToggleClicked() {
+        linkNote = "";
         if (TelemetryState.running) {
             Intent stop = new Intent(this, ImuService.class);
             stop.setAction(ImuService.ACTION_STOP);
@@ -501,8 +610,7 @@ public class MainActivity extends Activity {
         final int port = parsePort();
 
         new Thread(() -> {
-            String foundLan = null;
-            String foundTs = null;
+            ArrayList<DiscoveryCommit> found = new ArrayList<>();
             try (DatagramSocket sock = new DatagramSocket()) {
                 sock.setBroadcast(true);
                 sock.setSoTimeout(1200);
@@ -526,41 +634,104 @@ public class MainActivity extends Activity {
                     }
                 }
 
+                long deadline = System.currentTimeMillis() + 1200L;
                 byte[] buf = new byte[512];
-                DatagramPacket resp = new DatagramPacket(buf, buf.length);
-                sock.receive(resp);
-                String body = new String(resp.getData(), 0, resp.getLength(), StandardCharsets.UTF_8);
-                JSONObject obj = new JSONObject(body);
-                if (obj.optBoolean("steady", false)) {
-                    String lan = sanitizeHost(obj.optString("lan", ""));
-                    String replyIp = sanitizeHost(resp.getAddress().getHostAddress());
-                    foundLan = (lan != null) ? lan : replyIp;
-                    foundTs = sanitizeHost(obj.optString("ts", ""));
+                while (System.currentTimeMillis() < deadline) {
+                    int left = (int) (deadline - System.currentTimeMillis());
+                    if (left <= 0) break;
+                    sock.setSoTimeout(left);
+                    DatagramPacket resp = new DatagramPacket(buf, buf.length);
+                    try {
+                        sock.receive(resp);
+                    } catch (Exception end) {
+                        break;
+                    }
+                    try {
+                        String body = new String(resp.getData(), 0, resp.getLength(), StandardCharsets.UTF_8);
+                        JSONObject obj = new JSONObject(body);
+                        if (!obj.optBoolean("steady", false)) continue;
+                        String source = resp.getAddress() == null ? null : resp.getAddress().getHostAddress();
+                        DiscoveryCommit offer = DiscoveryCommit.offer(
+                            DiscoveryChoice.target(source, obj.optString("lan", "")),
+                            obj.optString("ts", "")
+                        );
+                        if (offer == null || offer.persist()) continue;
+                        boolean dup = false;
+                        for (int i = 0; i < found.size(); i++) {
+                            if (found.get(i).host.equals(offer.host)) {
+                                dup = true;
+                                break;
+                            }
+                        }
+                        if (!dup) found.add(offer);
+                    } catch (Exception ignored) {}
                 }
             } catch (Exception ignored) {
             }
 
-            final String fLan = foundLan;
-            final String fTs = foundTs;
-            uiHandler.post(() -> {
-                if (isFinishing() || isDestroyed()) return;
-                discoverBtn.setEnabled(true);
-                discoverBtn.setText("自動搜尋同區網 Omarchy");
-                if (fLan != null) {
-                    SharedPreferences.Editor ed = prefs.edit().putString(KEY_LAN_IP, fLan);
-                    if (fTs != null) {
-                        ed.putString(KEY_TS_IP, fTs);
-                    }
-                    ed.apply();
-                    hostInput.setText(fLan);
-                    savePrefs();
-                    updateChipLabels();
-                    Toast.makeText(this, "已找到 Omarchy：" + fLan, Toast.LENGTH_SHORT).show();
-                } else {
-                    Toast.makeText(this, "區網未收到回應（跨網請用 Tailscale，或確認防火牆放行 UDP 8766）", Toast.LENGTH_LONG).show();
-                }
-            });
+            final ArrayList<DiscoveryCommit> offers = found;
+            uiHandler.post(() -> presentDiscovery(offers));
         }).start();
+    }
+
+    private void presentDiscovery(ArrayList<DiscoveryCommit> offers) {
+        if (isFinishing() || isDestroyed()) return;
+        discoverBtn.setEnabled(true);
+        discoverBtn.setText("自動搜尋同區網 Omarchy");
+        if (offers.isEmpty()) {
+            Toast.makeText(this, "區網未收到回應（跨網請用 Tailscale，或確認防火牆放行 UDP 8766）", Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (offers.size() == 1) {
+            confirmDiscovery(offers.get(0));
+            return;
+        }
+        final String[] labels = new String[offers.size()];
+        for (int i = 0; i < offers.size(); i++) {
+            DiscoveryCommit c = offers.get(i);
+            labels[i] = c.ts == null ? c.host : (c.host + "  ·  " + c.ts);
+        }
+        new AlertDialog.Builder(this)
+            .setTitle("確認搜尋到的電腦")
+            .setSingleChoiceItems(labels, 0, null)
+            .setPositiveButton("確認", (d, w) -> {
+                int which = ((AlertDialog) d).getListView().getCheckedItemPosition();
+                if (which >= 0 && which < offers.size()) confirmDiscovery(offers.get(which));
+            })
+            .setNegativeButton("取消", null)
+            .show();
+    }
+
+    private void confirmDiscovery(DiscoveryCommit offer) {
+        if (offer == null || offer.persist()) return;
+        final String cur = hostInput.getText().toString().trim();
+        final String port = portInput.getText().toString().trim();
+        StringBuilder msg = new StringBuilder();
+        msg.append("host: ").append(cur.isEmpty() ? "(空)" : cur).append(" → ").append(offer.host);
+        msg.append("\nport: ").append(port);
+        if (offer.ts != null) {
+            String curTs = prefs.getString(KEY_TS_IP, "");
+            msg.append("\nts: ").append(curTs.isEmpty() ? "(空)" : curTs).append(" → ").append(offer.ts);
+        }
+        final String shown = msg.toString();
+        new AlertDialog.Builder(this)
+            .setTitle("確認連線目標")
+            .setMessage(shown)
+            .setPositiveButton("確認", (d, w) -> {
+                if (!shown.contains("→ " + offer.host)) return;
+                DiscoveryCommit kept = offer.confirm();
+                if (!kept.persist()) return;
+                SharedPreferences.Editor ed = prefs.edit().putString(KEY_LAN_IP, kept.host);
+                if (kept.ts != null) ed.putString(KEY_TS_IP, kept.ts);
+                ed.apply();
+                hostInput.setText(kept.host);
+                savePrefs();
+                updateChipLabels();
+                Toast.makeText(this, "已改為 " + kept.host, Toast.LENGTH_SHORT).show();
+                if (TelemetryState.running) restartStream();
+            })
+            .setNegativeButton("取消", null)
+            .show();
     }
 
     private void refreshBatteryButton() {
@@ -589,17 +760,25 @@ public class MainActivity extends Activity {
 
     private void refreshUi() {
         final boolean running = TelemetryState.running;
-        final boolean idle = running && TelemetryState.powerSavingIdle;
-        final int uiState = !running ? 0 : (idle ? 2 : 1);
+        final boolean reachable = TelemetryState.desktopReachable;
+        final boolean idle = running && reachable && TelemetryState.powerSavingIdle;
+        final int uiState = !running ? 0 : (!reachable ? 3 : (idle ? 2 : 1));
 
         if (uiState != lastUiState) {
             lastUiState = uiState;
-            if (running) {
+            if (uiState == 3) {
+                statusBadge.setBackground(badgeIdleBg);
+                statusBadge.setTextColor(COLOR_DANGER);
+                statusBadge.setText("● desktop not reachable");
+                toggleBtn.setText("停止背景串流");
+                toggleBtn.setBackground(btnStopBg);
+                toggleBtn.setTextColor(Color.WHITE);
+            } else if (running) {
                 statusBadge.setBackground(badgeRunningBg);
                 statusBadge.setTextColor(0xFF8FD694);
                 statusBadge.setText(idle
                     ? "● 靜止省電中 (1Hz) · 移動即刻恢復"
-                    : "● 背景串流中 (25Hz) · 可縮小或關螢幕");
+                    : "● 背景串流中 (12.5Hz) · 可縮小或關螢幕");
                 toggleBtn.setText("停止背景串流");
                 toggleBtn.setBackground(btnStopBg);
                 toggleBtn.setTextColor(Color.WHITE);
@@ -619,7 +798,13 @@ public class MainActivity extends Activity {
             TelemetryState.ax, TelemetryState.ay, TelemetryState.gz
         ));
 
-        if (running) {
+        if (running && !reachable) {
+            hzText.setText(String.format(
+                Locale.US,
+                "desktop not reachable · %d 封包",
+                TelemetryState.packetsSent
+            ));
+        } else if (running) {
             hzText.setText(String.format(
                 Locale.US,
                 "%d Hz · %s · %s · %d 封包",
@@ -630,8 +815,9 @@ public class MainActivity extends Activity {
             hzText.setText("0 Hz · 按上方按鈕啟動省電前景服務");
         }
 
-        if (TelemetryState.lastError != null && !TelemetryState.lastError.isEmpty()) {
-            errorText.setText(TelemetryState.lastError);
+        String err = (linkNote != null && !linkNote.isEmpty()) ? linkNote : TelemetryState.lastError;
+        if (err != null && !err.isEmpty()) {
+            errorText.setText(err);
             errorText.setVisibility(View.VISIBLE);
         } else {
             errorText.setVisibility(View.GONE);

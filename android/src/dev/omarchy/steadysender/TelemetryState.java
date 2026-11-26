@@ -3,6 +3,7 @@ package dev.omarchy.steadysender;
 public final class TelemetryState {
     public static volatile boolean running = false;
     public static volatile boolean powerSavingIdle = false;
+    public static volatile boolean desktopReachable = true;
     public static volatile String targetHost = "";
     public static volatile int targetPort = 8766;
     public static volatile boolean landscape = false;

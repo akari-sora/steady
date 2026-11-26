@@ -7,6 +7,8 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
+import android.net.ConnectivityManager;
+import android.net.Network;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
@@ -18,10 +20,14 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
 import android.os.SystemClock;
+import android.util.Log;
 
+import java.lang.reflect.Method;
 import java.net.DatagramPacket;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 
 public class ImuService extends Service {
@@ -37,36 +43,33 @@ public class ImuService extends Service {
     private static final String CHANNEL_ID = "steady_imu_stream";
     private static final int NOTIF_ID = 8766;
     private static final int AUTOSTOP_NOTIF_ID = 8767;
-
-    // Power-optimized timing constants:
-    // Desktop applies a ~3 Hz vestibular low-pass filter, so 25 Hz active streaming with
-    // 40 ms hardware FIFO batching is visually identical to 55 Hz while cutting radio + CPU
-    // wakeups by ~55%. When stationary >= 4s, TX drops to 1 Hz keepalive (-96% radio wakeups).
-    private static final int SAMPLE_PERIOD_US = 40_000;        // 25 Hz
-    private static final int MAX_REPORT_LATENCY_US = 40_000;   // 40 ms sensor-hub FIFO batch
-    private static final long ACTIVE_SEND_INTERVAL_MS = 38L;   // ~25 Hz
-    private static final long IDLE_SEND_INTERVAL_MS = 1000L;   // 1 Hz keepalive when stationary
-    private static final long IDLE_ENTER_MS = 4_000L;          // enter 1 Hz after 4s stillness
-    private static final long AUTO_STOP_STILL_MS = 20L * 60L * 1000L; // auto-stop after 20 min still
-    private static final long MAX_ERROR_DURATION_MS = 5L * 60L * 1000L; // auto-stop after 5 min offline
-    private static final long WAKELOCK_SLICE_MS = 25L * 60L * 1000L;    // bounded WakeLock slice
+    private static final String LOG_TAG = "SteadySender";
+    private static final long TICK_MS = 200L;
+    private static final long WAKELOCK_SLICE_MS = 25L * 60L * 1000L;
     private static final long WAKELOCK_RENEW_INTERVAL_MS = 10L * 60L * 1000L;
+    private static final int RECV_TIMEOUT_MS = 8;
 
-    private static final float MOTION_ACCEL_THRESHOLD = 0.22f; // m/s^2
-    private static final float MOTION_GYRO_THRESHOLD = 0.08f;  // rad/s
+    private static final byte[] DISCOVER = "{\"cmd\":\"discover\"}".getBytes(StandardCharsets.US_ASCII);
+    private static final byte[] CALIBRATE = "{\"cmd\":\"calibrate\"}".getBytes(StandardCharsets.US_ASCII);
+    private static final String UNREACHABLE = "desktop not reachable";
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final AtomicInteger networkEpoch = new AtomicInteger();
     private SensorManager sensorManager;
-    private PowerManager.WakeLock wakeLock;
+    private ConnectivityManager.NetworkCallback networkCallback;
     private volatile StreamSession activeSession;
     private volatile boolean landscape = false;
     private boolean foregroundStarted = false;
+    private String notifHost = "";
+    private int notifPort = 8766;
+    private String notifDetail = "靜止自動降頻至 1Hz";
 
     @Override
     public void onCreate() {
         super.onCreate();
         createNotificationChannel();
         sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
+        watchNetwork();
     }
 
     @Override
@@ -102,12 +105,12 @@ public class ImuService extends Service {
             return START_NOT_STICKY;
         }
 
-        // ACTION_START (or default): always call startForeground() defensively before any early stop
-        // to satisfy Android 8-17 startForegroundService() contract and avoid crash.
         String rawHost = intent.getStringExtra(EXTRA_HOST);
         String host = (rawHost == null) ? "" : rawHost.trim();
         int port = clampPort(intent.getIntExtra(EXTRA_PORT, 8766));
         landscape = intent.getBooleanExtra(EXTRA_LANDSCAPE, false);
+        long stopOverride = TimeoutSource.unreachableMs(0L, debugOverride("debug.steady.unreachable_ms"));
+        long stillOverride = TimeoutSource.stillMs(0L, debugOverride("debug.steady.still_ms"));
 
         if (!promoteToForeground(host.isEmpty() ? "未設定" : host, port)) {
             TelemetryState.running = false;
@@ -121,7 +124,7 @@ public class ImuService extends Service {
             return START_NOT_STICKY;
         }
 
-        startSession(host, port);
+        startSession(host, port, stopOverride, stillOverride);
         return START_NOT_STICKY;
     }
 
@@ -129,7 +132,67 @@ public class ImuService extends Service {
         return (port >= 1 && port <= 65535) ? port : 8766;
     }
 
+    /**
+     * Adb can set {@code debug.steady.unreachable_ms} or {@code debug.steady.still_ms}
+     * as a system property, or the same name in {@code settings global}.
+     * A normal app cannot write either. Intent extras are not read.
+     */
+    private String debugOverride(String key) {
+        String prop = systemProperty(key);
+        if (prop != null && !prop.trim().isEmpty()) return prop.trim();
+        try {
+            String g = android.provider.Settings.Global.getString(getContentResolver(), key);
+            if (g != null && !g.trim().isEmpty()) return g.trim();
+        } catch (Throwable ignored) {}
+        return "";
+    }
+
+    private static String systemProperty(String key) {
+        try {
+            Class<?> sp = Class.forName("android.os.SystemProperties");
+            Method get = sp.getMethod("get", String.class, String.class);
+            Object v = get.invoke(null, key, "");
+            return v == null ? "" : v.toString();
+        } catch (Throwable ignored) {
+            return "";
+        }
+    }
+
+    private void watchNetwork() {
+        ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+        if (cm == null || networkCallback != null) return;
+        networkCallback = new ConnectivityManager.NetworkCallback() {
+            @Override
+            public void onAvailable(Network network) {
+                networkEpoch.incrementAndGet();
+            }
+
+            @Override
+            public void onLost(Network network) {
+                networkEpoch.incrementAndGet();
+            }
+        };
+        try {
+            cm.registerDefaultNetworkCallback(networkCallback);
+        } catch (Exception e) {
+            networkCallback = null;
+        }
+    }
+
+    private void unwatchNetwork() {
+        if (networkCallback == null) return;
+        ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+        if (cm != null) {
+            try {
+                cm.unregisterNetworkCallback(networkCallback);
+            } catch (Exception ignored) {}
+        }
+        networkCallback = null;
+    }
+
     private boolean promoteToForeground(String host, int port) {
+        notifHost = host;
+        notifPort = port;
         Notification notif = buildNotification(host, port);
         try {
             if (Build.VERSION.SDK_INT >= 34) {
@@ -145,13 +208,16 @@ public class ImuService extends Service {
         }
     }
 
-    private void startSession(String host, int port) {
+    private void startSession(String host, int port, long stopOverride, long stillOverride) {
         StreamSession prev = activeSession;
         activeSession = null;
         if (prev != null) {
+            prev.releaseWake();
             prev.stopAsync();
         }
 
+        notifHost = host;
+        notifPort = port;
         TelemetryState.targetHost = host;
         TelemetryState.targetPort = port;
         TelemetryState.landscape = landscape;
@@ -160,19 +226,15 @@ public class ImuService extends Service {
         TelemetryState.hz = 0;
         TelemetryState.running = true;
         TelemetryState.powerSavingIdle = false;
-        TelemetryState.powerModeLabel = "活躍 25Hz";
+        TelemetryState.desktopReachable = true;
+        TelemetryState.powerModeLabel = "行車 12.5Hz";
 
-        acquireOrRenewWakeLock();
-
-        StreamSession session = new StreamSession(host, port);
+        StreamSession session = new StreamSession(host, port, stopOverride, stillOverride);
         activeSession = session;
+        session.armWake();
         session.start();
     }
 
-    /**
-     * Marshals worker-initiated stops onto the main thread and verifies session ownership so
-     * a stale session failing late can never tear down a newly started healthy session.
-     */
     private void requestSessionStop(final StreamSession session, final String errorMsg, final String autoStopReason) {
         mainHandler.post(() -> {
             if (activeSession != session) {
@@ -185,38 +247,30 @@ public class ImuService extends Service {
         });
     }
 
-    private synchronized void acquireOrRenewWakeLock() {
-        PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
-        if (pm == null) return;
-        if (wakeLock == null) {
-            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SteadySender:ImuWakeLock");
-            wakeLock.setReferenceCounted(false);
-        }
-        // Bounded WakeLock prevents permanent battery drain if anything stalls unexpectedly.
-        wakeLock.acquire(WAKELOCK_SLICE_MS);
-    }
-
-    private synchronized void releaseWakeLock() {
-        if (wakeLock != null && wakeLock.isHeld()) {
-            try {
-                wakeLock.release();
-            } catch (Exception ignored) {}
-        }
-        wakeLock = null;
+    private void showDetail(final StreamSession session, final String detail) {
+        mainHandler.post(() -> {
+            if (activeSession != session || !foregroundStarted) return;
+            if (detail.equals(notifDetail)) return;
+            notifDetail = detail;
+            NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            if (nm != null) {
+                nm.notify(NOTIF_ID, buildNotification(notifHost, notifPort));
+            }
+        });
     }
 
     private void stopStreaming(String autoStopReason) {
         StreamSession prev = activeSession;
         activeSession = null;
         if (prev != null) {
+            prev.releaseWake();
             prev.stopAsync();
         }
         TelemetryState.running = false;
         TelemetryState.powerSavingIdle = false;
+        TelemetryState.desktopReachable = true;
         TelemetryState.hz = 0;
         TelemetryState.powerModeLabel = "待機";
-
-        releaseWakeLock();
 
         if (foregroundStarted) {
             try {
@@ -234,15 +288,17 @@ public class ImuService extends Service {
 
     @Override
     public void onDestroy() {
+        unwatchNetwork();
         StreamSession prev = activeSession;
         activeSession = null;
         if (prev != null) {
+            prev.releaseWake();
             prev.stopAsync();
         }
         TelemetryState.running = false;
         TelemetryState.powerSavingIdle = false;
+        TelemetryState.desktopReachable = true;
         TelemetryState.hz = 0;
-        releaseWakeLock();
         super.onDestroy();
     }
 
@@ -259,7 +315,7 @@ public class ImuService extends Service {
             "Steady IMU 背景串流",
             NotificationManager.IMPORTANCE_LOW
         );
-        ch.setDescription("維持手機陀螺儀與加速度計背景傳送給 Omarchy Steady");
+        ch.setDescription("維持手機加速度計與陀螺儀背景傳送給 Steady");
         ch.setShowBadge(false);
         nm.createNotificationChannel(ch);
     }
@@ -286,7 +342,7 @@ public class ImuService extends Service {
         return new Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_steady)
             .setContentTitle("Steady 背景串流中（省電自適應）")
-            .setContentText("UDP → " + host + ":" + port + " · 靜止自動降頻至 1Hz")
+            .setContentText("UDP → " + host + ":" + port + " · " + notifDetail)
             .setOngoing(true)
             .setContentIntent(openPi)
             .addAction(new Notification.Action.Builder(null, "校正原點", calPi).build())
@@ -313,44 +369,55 @@ public class ImuService extends Service {
         } catch (Exception ignored) {}
     }
 
-    /**
-     * Self-contained per-session worker: owns its own HandlerThread, DatagramSocket,
-     * pre-allocated send buffers, and sensor listener registration so start/stop/restart
-     * never race across threads.
-     */
     private final class StreamSession implements SensorEventListener {
         private final String host;
         private final int port;
         private final HandlerThread thread;
         private final Handler handler;
-
-        // Reusable zero-allocation hot-loop buffers (accessed exclusively on worker thread)
-        private final StringBuilder sb = new StringBuilder(144);
+        private final DesktopProbe probe = new DesktopProbe();
+        private final StreamOutput output = new StreamOutput();
+        private final WakeGate wakeGate = new WakeGate();
+        private final Object wakeMu = new Object();
+        private final StringBuilder jsonSb = new StringBuilder(144);
         private final byte[] sendBuf = new byte[192];
+        private final byte[] recvBuf = new byte[512];
+
         private DatagramSocket socket;
         private InetAddress targetAddr;
-        private DatagramPacket packet;
+        private String currentIp = "";
+        private TargetRefresh.View targetView;
+        private int seenNet;
+        private PowerManager.WakeLock sessionLock;
+        private boolean sessionActive;
+        private DatagramPacket samplePacket;
+        private DatagramPacket discoverPacket;
+        private DatagramPacket recvPacket;
 
+        private Sensor accelSensor;
+        private Sensor gyroSensor;
         private boolean stopped = false;
         private boolean gravityIncluded = false;
-        private boolean hasPrevRaw = false;
-        private float prevRawX = 0f, prevRawY = 0f, prevRawZ = 0f;
-        private float latestGyroZ = 0f;
+        private boolean sensorsBound = false;
+        private boolean sensorsAreIdle = false;
+        private boolean gyroGaveUp = false;
+        private boolean motionIdle = false;
 
-        private long lastSendMs = 0L;
-        private long lastMotionMs = 0L;
+        private float latestGyroZ = 0f;
         private long lastWakeRenewMs = 0L;
         private long hzWindowStartMs = 0L;
         private int hzCounter = 0;
+        private String lastDetail = "";
 
-        // Send error exponential backoff
         private long firstErrorMs = 0L;
         private long nextRetryMs = 0L;
         private long backoffMs = 1000L;
+        private final long stillStopMs;
 
-        StreamSession(String host, int port) {
+        StreamSession(String host, int port, long stopOverride, long stillOverride) {
             this.host = host;
             this.port = port;
+            this.stillStopMs = StreamTiming.clampStillStop(stillOverride);
+            if (stopOverride > 0L) probe.overrideStopAfterMs(stopOverride);
             this.thread = new HandlerThread("SteadyImuWorker");
             this.thread.start();
             this.handler = new Handler(this.thread.getLooper());
@@ -364,8 +431,7 @@ public class ImuService extends Service {
             handler.post(() -> {
                 if (stopped || socket == null || targetAddr == null) return;
                 try {
-                    byte[] data = "{\"cmd\":\"calibrate\"}".getBytes(StandardCharsets.UTF_8);
-                    socket.send(new DatagramPacket(data, data.length, targetAddr, port));
+                    socket.send(new DatagramPacket(CALIBRATE, CALIBRATE.length, targetAddr, port));
                 } catch (Exception e) {
                     TelemetryState.lastError = "校正送出失敗：" + e.getMessage();
                 }
@@ -376,12 +442,59 @@ public class ImuService extends Service {
             handler.post(this::teardownOnWorker);
         }
 
+        void armWake() {
+            synchronized (wakeMu) {
+                sessionActive = true;
+                wakeGate.arm();
+                acquirePm();
+            }
+        }
+
+        void releaseWake() {
+            synchronized (wakeMu) {
+                sessionActive = false;
+                wakeGate.release();
+                releasePm();
+            }
+        }
+
+        private void renewWake(boolean earlyPermit) {
+            synchronized (wakeMu) {
+                if (activeSession != this || !sessionActive) {
+                    wakeGate.release();
+                    releasePm();
+                    return;
+                }
+                if (!wakeGate.tryRenew(earlyPermit && !stopped)) return;
+                acquirePm();
+            }
+        }
+
+        private void acquirePm() {
+            PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+            if (pm == null) return;
+            if (sessionLock == null) {
+                sessionLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SteadySender:ImuWakeLock");
+                sessionLock.setReferenceCounted(false);
+            }
+            sessionLock.acquire(WAKELOCK_SLICE_MS);
+        }
+
+        private void releasePm() {
+            if (sessionLock != null && sessionLock.isHeld()) {
+                try {
+                    sessionLock.release();
+                } catch (Exception ignored) {}
+            }
+            sessionLock = null;
+        }
+
         private void initOnWorker() {
             if (stopped || activeSession != this) return;
+            seenNet = networkEpoch.get();
             try {
-                targetAddr = InetAddress.getByName(host);
-                socket = new DatagramSocket();
-                packet = new DatagramPacket(sendBuf, 0, targetAddr, port);
+                clearDns();
+                openConnected(InetAddress.getByName(host));
             } catch (Exception e) {
                 teardownOnWorker();
                 requestSessionStop(this, "網路初始化失敗：" + e.getMessage(), null);
@@ -393,14 +506,13 @@ public class ImuService extends Service {
                 return;
             }
 
-            Sensor accelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION);
+            accelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION);
             gravityIncluded = false;
             if (accelSensor == null) {
                 accelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
                 gravityIncluded = true;
             }
-            Sensor gyroSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
-
+            gyroSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
             if (accelSensor == null) {
                 teardownOnWorker();
                 requestSessionStop(this, "裝置找不到加速度計", null);
@@ -408,141 +520,312 @@ public class ImuService extends Service {
             }
 
             String label = gravityIncluded ? "加速度計" : "線性加速度";
-            if (gyroSensor != null) {
-                label += " + 陀螺儀";
-            }
+            if (gyroSensor != null) label += " + 陀螺儀";
             TelemetryState.sensorLabel = label;
+            Log.i(LOG_TAG, "accel type=" + accelSensor.getType()
+                + " grav=" + gravityIncluded
+                + " name=" + accelSensor.getName());
 
             final long now = SystemClock.elapsedRealtime();
-            lastMotionMs = now;
+            output.setGravityIncluded(gravityIncluded);
+            output.reset(now);
             lastWakeRenewMs = now;
             hzWindowStartMs = now;
             hzCounter = 0;
-            lastSendMs = 0L;
+            Log.i(LOG_TAG, "unreachable stop ms=" + probe.stopAfterMs()
+                + " still stop ms=" + stillStopMs
+                + " target=" + currentIp);
 
-            sensorManager.registerListener(this, accelSensor, SAMPLE_PERIOD_US, MAX_REPORT_LATENCY_US, handler);
-            if (gyroSensor != null) {
-                sensorManager.registerListener(this, gyroSensor, SAMPLE_PERIOD_US, MAX_REPORT_LATENCY_US, handler);
-            }
+            syncSensorMode(false);
+            publishLinkState(false, true);
+            handler.post(this::tick);
         }
 
         private void teardownOnWorker() {
-            if (stopped) return;
+            if (stopped) {
+                releaseWake();
+                return;
+            }
             stopped = true;
+            handler.removeCallbacksAndMessages(null);
             if (sensorManager != null) {
                 sensorManager.unregisterListener(this);
             }
+            sensorsBound = false;
             if (socket != null) {
                 try {
                     socket.close();
                 } catch (Exception ignored) {}
                 socket = null;
             }
+            releaseWake();
             thread.quitSafely();
+        }
+
+        private void openConnected(InetAddress fresh) throws Exception {
+            DatagramSocket neu = new DatagramSocket();
+            neu.setSoTimeout(RECV_TIMEOUT_MS);
+            try {
+                neu.connect(fresh, port);
+            } catch (Exception ignored) {}
+            String ip = HostCheck.normalizeAddress(fresh.getHostAddress());
+            TargetRefresh.View next = TargetRefresh.swap(targetView, ip, port);
+            DatagramSocket old = socket;
+            socket = neu;
+            targetAddr = fresh;
+            if (next != null) {
+                targetView = next;
+                currentIp = next.ip;
+            }
+            samplePacket = new DatagramPacket(sendBuf, 0, fresh, port);
+            discoverPacket = new DatagramPacket(DISCOVER, DISCOVER.length, fresh, port);
+            recvPacket = new DatagramPacket(recvBuf, recvBuf.length);
+            if (old != null && old != neu) {
+                try {
+                    old.close();
+                } catch (Exception ignored) {}
+            }
+        }
+
+        private void refreshTarget(boolean networkChanged) {
+            if (stopped || !TargetRefresh.shouldResolve(probe.misses(), probe.samplesEnabled(), networkChanged)) {
+                return;
+            }
+            try {
+                clearDns();
+                InetAddress fresh = InetAddress.getByName(host);
+                String ip = HostCheck.normalizeAddress(fresh.getHostAddress());
+                if (targetView != null && ip != null && ip.equals(targetView.ip) && socket != null && !socket.isClosed()) {
+                    return;
+                }
+                openConnected(fresh);
+                Log.i(LOG_TAG, "target refreshed " + currentIp);
+            } catch (Exception e) {
+                TelemetryState.lastError = "重新解析失敗：" + e.getMessage();
+            }
+        }
+
+        private void clearDns() {
+            System.setProperty("networkaddress.cache.ttl", "0");
+            System.setProperty("networkaddress.cache.negative.ttl", "0");
+            try {
+                Method m = InetAddress.class.getDeclaredMethod("clearDnsCache");
+                m.setAccessible(true);
+                m.invoke(null);
+            } catch (Throwable ignored) {}
+        }
+
+        private void tick() {
+            if (stopped) return;
+            final long now = SystemClock.elapsedRealtime();
+            int net = networkEpoch.get();
+            boolean netChanged = net != seenNet;
+            seenNet = net;
+            refreshTarget(netChanged);
+            pumpReceive(now);
+            if (probe.due(now)) {
+                try {
+                    if (socket != null) {
+                        socket.send(discoverPacket);
+                        String err = TelemetryState.lastError;
+                        if (err != null && err.startsWith("探測失敗")) TelemetryState.lastError = "";
+                    }
+                } catch (Exception e) {
+                    TelemetryState.lastError = "探測失敗：" + e.getMessage();
+                }
+                probe.markSent(now);
+            }
+            pumpReceive(now);
+            if (probe.shouldStop(now)) {
+                teardownOnWorker();
+                requestSessionStop(this, UNREACHABLE, "桌面端無法連線超過 5 分鐘，已自動停止");
+                return;
+            }
+            syncSensorMode(motionIdle || !probe.samplesEnabled());
+            publishLinkState(motionIdle, probe.samplesEnabled());
+            if (now - lastWakeRenewMs >= WAKELOCK_RENEW_INTERVAL_MS) {
+                lastWakeRenewMs = now;
+                renewWake(!stopped);
+            }
+            rollHz(now);
+            if (!stopped) handler.postDelayed(this::tick, TICK_MS);
+        }
+
+        private void pumpReceive(long now) {
+            if (socket == null || recvPacket == null) return;
+            for (int i = 0; i < 4; i++) {
+                try {
+                    recvPacket.setData(recvBuf);
+                    socket.receive(recvPacket);
+                    String body = new String(recvBuf, 0, recvPacket.getLength(), StandardCharsets.UTF_8);
+                    InetAddress from = recvPacket.getAddress();
+                    String fromIp = from == null ? null : from.getHostAddress();
+                    ReplyIntake.take(probe, now, currentIp, port, fromIp, recvPacket.getPort(), body);
+                } catch (SocketTimeoutException e) {
+                    return;
+                } catch (Exception e) {
+                    return;
+                }
+            }
+        }
+
+        private boolean registerSensor(Sensor sensor, int periodUs, int latencyUs) {
+            if (sensor == null || sensorManager == null) return false;
+            return sensorManager.registerListener(this, sensor, periodUs, latencyUs, handler);
+        }
+
+        private void syncSensorMode(boolean idle) {
+            if (stopped || accelSensor == null || sensorManager == null) return;
+            if (sensorsBound && sensorsAreIdle == idle) return;
+            sensorManager.unregisterListener(this);
+            int period = idle ? StreamTiming.IDLE_SAMPLE_PERIOD_US : StreamTiming.SAMPLE_PERIOD_US;
+            int latency = idle ? StreamTiming.IDLE_REPORT_LATENCY_US : StreamTiming.DRIVE_REPORT_LATENCY_US;
+            boolean gyroWanted = !idle && gyroSensor != null && !gyroGaveUp;
+            boolean accelOk = registerSensor(accelSensor, period, latency);
+            boolean gyroOk = !gyroWanted || registerSensor(gyroSensor, period, latency);
+            boolean accelRetried = false;
+            if (!accelOk) {
+                accelRetried = true;
+                sensorManager.unregisterListener(this);
+                accelOk = registerSensor(accelSensor, StreamTiming.BIND_FALLBACK_PERIOD_US, StreamTiming.BIND_FALLBACK_LATENCY_US);
+                gyroOk = !gyroWanted || registerSensor(gyroSensor, StreamTiming.BIND_FALLBACK_PERIOD_US, StreamTiming.BIND_FALLBACK_LATENCY_US);
+            } else if (gyroWanted && !gyroOk) {
+                gyroOk = registerSensor(gyroSensor, StreamTiming.BIND_FALLBACK_PERIOD_US, StreamTiming.BIND_FALLBACK_LATENCY_US);
+            }
+            SensorBind decision = SensorBind.after(accelOk, gyroWanted, gyroOk, idle, accelRetried);
+            Log.i(LOG_TAG, "sensors idle=" + idle + " periodUs=" + period + " latencyUs=" + latency
+                + " step=" + decision.step + " accel=" + accelOk + " gyro=" + gyroOk);
+            if (decision.step != SensorBind.Step.BOUND || !decision.bound) {
+                sensorsBound = false;
+                sensorsAreIdle = false;
+                String err = decision.error == null ? "無法註冊加速度計" : decision.error;
+                teardownOnWorker();
+                requestSessionStop(this, err, err);
+                return;
+            }
+            sensorsBound = true;
+            sensorsAreIdle = decision.idleModeApplied;
+            if (gyroWanted && !decision.gyroOn) gyroGaveUp = true;
+            if (decision.error != null) {
+                TelemetryState.lastError = decision.error;
+                showDetail(this, decision.error);
+            }
+            if (!idle) output.resetDrive(SystemClock.elapsedRealtime());
+        }
+
+        private void publishLinkState(boolean idle, boolean reachable) {
+            TelemetryState.powerSavingIdle = idle && reachable;
+            TelemetryState.desktopReachable = reachable;
+            String detail;
+            String mode;
+            if (!reachable) {
+                detail = UNREACHABLE;
+                mode = UNREACHABLE;
+                TelemetryState.lastError = UNREACHABLE;
+            } else if (gyroGaveUp && !idle) {
+                detail = "行車 12.5Hz · 陀螺儀未註冊";
+                mode = "行車 12.5Hz · 無陀螺儀";
+                if (UNREACHABLE.equals(TelemetryState.lastError)) TelemetryState.lastError = "";
+            } else if (idle) {
+                detail = "靜止 1Hz · 移動即刻恢復";
+                mode = "靜止省電 1Hz";
+                if (UNREACHABLE.equals(TelemetryState.lastError)) TelemetryState.lastError = "";
+            } else {
+                detail = "行車 12.5Hz";
+                mode = "行車 12.5Hz";
+                if (UNREACHABLE.equals(TelemetryState.lastError)) TelemetryState.lastError = "";
+            }
+            TelemetryState.powerModeLabel = mode;
+            if (!detail.equals(lastDetail)) {
+                lastDetail = detail;
+                showDetail(this, detail);
+            }
+        }
+
+        private void rollHz(long now) {
+            long dt = now - hzWindowStartMs;
+            if (dt >= 1000L) {
+                TelemetryState.hz = (int) Math.round((hzCounter * 1000.0) / dt);
+                hzCounter = 0;
+                hzWindowStartMs = now;
+            }
         }
 
         @Override
         public void onSensorChanged(SensorEvent event) {
-            if (stopped || socket == null || packet == null) return;
-
+            if (stopped || socket == null || event.values == null || event.values.length < 3) return;
             final int type = event.sensor.getType();
             if (type == Sensor.TYPE_GYROSCOPE) {
-                // Negate Android +Z (CCW) so right turn matches +X lateral cue.
                 latestGyroZ = -event.values[2];
                 return;
             }
+            if (type != Sensor.TYPE_LINEAR_ACCELERATION && type != Sensor.TYPE_ACCELEROMETER) return;
+            long sensorMs = SensorClock.toElapsedMs(event.timestamp);
+            double wireGz = latestGyroZ;
+            double detectGz = sensorsAreIdle ? 0.0 : wireGz;
+            StreamOutput.Out out = output.onSample(
+                sensorMs,
+                event.values[0], event.values[1], event.values[2],
+                detectGz, wireGz,
+                landscape, probe.samplesEnabled(), stillStopMs
+            );
+            applyOut(out, sensorMs);
+        }
 
-            if (type != Sensor.TYPE_LINEAR_ACCELERATION && type != Sensor.TYPE_ACCELEROMETER) {
-                return;
-            }
-
-            final long now = SystemClock.elapsedRealtime();
-            final float rawX = event.values[0];
-            final float rawY = event.values[1];
-            final float rawZ = event.values[2];
-
-            // Motion detection for adaptive radio power-saving
-            float motionMag;
-            if (gravityIncluded) {
-                if (!hasPrevRaw) {
-                    prevRawX = rawX; prevRawY = rawY; prevRawZ = rawZ;
-                    hasPrevRaw = true;
-                    motionMag = 0f;
-                } else {
-                    motionMag = Math.max(
-                        Math.abs(rawX - prevRawX),
-                        Math.max(Math.abs(rawY - prevRawY), Math.abs(rawZ - prevRawZ))
-                    );
-                    prevRawX = prevRawX * 0.85f + rawX * 0.15f;
-                    prevRawY = prevRawY * 0.85f + rawY * 0.15f;
-                    prevRawZ = prevRawZ * 0.85f + rawZ * 0.15f;
-                }
-            } else {
-                motionMag = Math.max(Math.abs(rawX), Math.abs(rawY));
-            }
-
-            if (motionMag > MOTION_ACCEL_THRESHOLD || Math.abs(latestGyroZ) > MOTION_GYRO_THRESHOLD) {
-                lastMotionMs = now;
-                if (now - lastWakeRenewMs >= WAKELOCK_RENEW_INTERVAL_MS) {
-                    lastWakeRenewMs = now;
-                    acquireOrRenewWakeLock();
-                }
-            }
-
-            final long stillMs = now - lastMotionMs;
-            if (stillMs >= AUTO_STOP_STILL_MS) {
+        private void applyOut(StreamOutput.Out out, long sensorMs) {
+            if (stopped || out == null) return;
+            if (out.kind == StreamOutput.Kind.STOP_STILL) {
                 teardownOnWorker();
                 requestSessionStop(this, null, "已靜止 20 分鐘，自動停止串流省電");
                 return;
             }
-
-            final boolean isIdle = stillMs >= IDLE_ENTER_MS;
-            if (TelemetryState.powerSavingIdle != isIdle) {
-                TelemetryState.powerSavingIdle = isIdle;
-                TelemetryState.powerModeLabel = isIdle ? "靜止省電 1Hz" : "活躍 25Hz";
-            }
-
-            final long sendInterval = isIdle ? IDLE_SEND_INTERVAL_MS : ACTIVE_SEND_INTERVAL_MS;
-            if (now - lastSendMs < sendInterval) {
+            if (out.kind == StreamOutput.Kind.STOP_SENSOR) {
+                teardownOnWorker();
+                requestSessionStop(this, out.error, out.error);
                 return;
             }
-            if (nextRetryMs > now) {
-                return;
-            }
-            lastSendMs = now;
+            motionIdle = out.motionIdle;
+            syncSensorMode(out.wantIdleSensors);
+            if (stopped) return;
+            publishLinkState(motionIdle, probe.samplesEnabled());
+            if (out.kind != StreamOutput.Kind.EMIT) return;
+            if (!probe.samplesEnabled() || nextRetryMs > sensorMs) return;
+            emit(sensorMs, out.ax, out.ay, out.az, out.gz, out.idle);
+        }
 
-            final boolean isLand = landscape;
-            final double ax = isLand ? -rawY : rawX;
-            final double ay = isLand ? rawX : rawY;
+        private void emit(long now, double rawX, double rawY, double rawZ, double gz, boolean idle) {
+            if (socket == null || samplePacket == null) return;
+            final boolean land = landscape;
+            final double ax = land ? -rawY : rawX;
+            final double ay = land ? rawX : rawY;
             final double az = rawZ;
-            final double gz = latestGyroZ;
 
             TelemetryState.ax = ax;
             TelemetryState.ay = ay;
             TelemetryState.az = az;
             TelemetryState.gz = gz;
 
-            final int len = encodeJsonAscii(ax, ay, az, gz, gravityIncluded);
+            final int len = SampleJson.encode(sendBuf, jsonSb, ax, ay, az, gz, gravityIncluded, idle);
             if (len <= 0) return;
-
-            packet.setData(sendBuf, 0, len);
+            samplePacket.setData(sendBuf, 0, len);
             try {
-                socket.send(packet);
+                socket.send(samplePacket);
+                output.noteSent(now);
                 TelemetryState.packetsSent++;
                 hzCounter++;
                 if (firstErrorMs != 0L) {
                     firstErrorMs = 0L;
                     nextRetryMs = 0L;
                     backoffMs = 1000L;
-                    TelemetryState.lastError = "";
+                    if (!UNREACHABLE.equals(TelemetryState.lastError)) TelemetryState.lastError = "";
                 }
             } catch (Exception e) {
                 if (firstErrorMs == 0L) {
                     firstErrorMs = now;
                     backoffMs = 1000L;
-                } else if (now - firstErrorMs >= MAX_ERROR_DURATION_MS) {
+                } else if (now - firstErrorMs >= DesktopProbe.UNREACHABLE_STOP_MS) {
                     teardownOnWorker();
-                    requestSessionStop(this, "連續 5 分鐘無法連線，已自動停止", "無法連線到 Omarchy，已自動停止省電");
+                    requestSessionStop(this, "連續 5 分鐘無法連線，已自動停止", "無法連線到電腦，已自動停止省電");
                     return;
                 } else {
                     backoffMs = Math.min(backoffMs * 2L, 5000L);
@@ -550,63 +833,10 @@ public class ImuService extends Service {
                 nextRetryMs = now + backoffMs;
                 TelemetryState.lastError = "UDP 傳送重試中 (" + (backoffMs / 1000L) + "s)";
             }
-
-            final long dtMs = now - hzWindowStartMs;
-            if (dtMs >= 1000L) {
-                TelemetryState.hz = (int) Math.round((hzCounter * 1000.0) / Math.max(dtMs, 1L));
-                hzCounter = 0;
-                hzWindowStartMs = now;
-            }
         }
 
         @Override
         public void onAccuracyChanged(Sensor sensor, int accuracy) {
-            // No-op
-        }
-
-        /**
-         * Allocation-free ASCII JSON encoder writing directly into sendBuf.
-         */
-        private int encodeJsonAscii(double ax, double ay, double az, double gz, boolean grav) {
-            sb.setLength(0);
-            sb.append("{\"ax\":");
-            appendFixed3(sb, ax);
-            sb.append(",\"ay\":");
-            appendFixed3(sb, ay);
-            sb.append(",\"az\":");
-            appendFixed3(sb, az);
-            sb.append(",\"gz\":");
-            appendFixed3(sb, gz);
-            sb.append(",\"grav\":");
-            sb.append(grav ? "true" : "false");
-            sb.append(",\"src\":\"Steady Android\"}");
-
-            final int n = sb.length();
-            if (n > sendBuf.length) return 0;
-            for (int i = 0; i < n; i++) {
-                sendBuf[i] = (byte) sb.charAt(i);
-            }
-            return n;
-        }
-
-        private void appendFixed3(StringBuilder out, double v) {
-            if (!Double.isFinite(v)) {
-                out.append("0");
-                return;
-            }
-            if (v > 1000.0) v = 1000.0;
-            else if (v < -1000.0) v = -1000.0;
-            long scaled = Math.round(v * 1000.0);
-            if (scaled < 0) {
-                out.append('-');
-                scaled = -scaled;
-            }
-            long whole = scaled / 1000L;
-            long frac = scaled % 1000L;
-            out.append(whole).append('.');
-            if (frac < 100L) out.append('0');
-            if (frac < 10L) out.append('0');
-            out.append(frac);
         }
     }
 }
