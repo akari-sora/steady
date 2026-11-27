@@ -973,10 +973,12 @@ void SensorServer::parseImuPayload(const QByteArray &payload, Transport transpor
                 }
             }
             if (label.isEmpty()) {
+                // Language-neutral keys; MotionEngine::imuSource() translates
+                // them on read so a language switch updates the panel live.
                 switch (transport) {
-                case Transport::Udp: label = QStringLiteral("UDP 感應器"); break;
-                case Transport::Https: label = QStringLiteral("手機網頁 (HTTPS)"); break;
-                case Transport::WebSocket: label = QStringLiteral("手機網頁 (WSS)"); break;
+                case Transport::Udp: label = QStringLiteral("transport:udp"); break;
+                case Transport::Https: label = QStringLiteral("transport:https"); break;
+                case Transport::WebSocket: label = QStringLiteral("transport:wss"); break;
                 }
             }
             ingestSample(address, ax, ay, az, gx, gy, gz, grav, label, obj.value(QStringLiteral("idle")).toBool());
@@ -1032,11 +1034,11 @@ void SensorServer::parseImuPayload(const QByteArray &payload, Transport transpor
 QByteArray SensorServer::buildPhoneHtml() const
 {
     QString html = QString::fromUtf8(R"HTML(<!doctype html>
-<html lang="zh-Hant">
+<html lang="__I18N_HTML_LANG__">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>Steady 手機 IMU</title>
+<title>__I18N_PAGE_TITLE__</title>
 <style>
   body { margin:0; background:#0c0b0c; color:#fafcfb; font-family:system-ui,-apple-system,sans-serif;
          display:flex; flex-direction:column; align-items:center; justify-content:center;
@@ -1055,18 +1057,18 @@ QByteArray SensorServer::buildPhoneHtml() const
 </style>
 </head>
 <body>
-  <div class="badge" id="status">待機中</div>
-  <h1>Steady 手機感應器</h1>
-  <p>想要<b>縮小 App 或關螢幕</b>省電持續傳送，請安裝下方 Android 背景版 APK（12.5 Hz 活躍／靜止自動降 1 Hz）。</p>
+  <div class="badge" id="status">__I18N_BADGE__</div>
+  <h1>__I18N_HEADING__</h1>
+  <p>__I18N_INTRO__</p>
   <div class="card" style="margin-bottom:14px; border-color:#524441;">
-    <a href="/steady-sender.apk" style="display:block; text-decoration:none; background:#b59790; color:#0c0b0c; padding:14px; border-radius:12px; font-size:16px; font-weight:700; margin-bottom:10px;">下載 Android 背景版 APK（省電推薦）</a>
-    <a id="deeplink" href="#" style="display:block; text-decoration:none; background:#2a2629; color:#fafcfb; padding:11px; border-radius:10px; font-size:13px; font-weight:600;">已安裝？點此自動帶入目前 IP 開啟 App</a>
+    <a href="/steady-sender.apk" style="display:block; text-decoration:none; background:#b59790; color:#0c0b0c; padding:14px; border-radius:12px; font-size:16px; font-weight:700; margin-bottom:10px;">__I18N_DOWNLOAD_APK__</a>
+    <a id="deeplink" href="#" style="display:block; text-decoration:none; background:#2a2629; color:#fafcfb; padding:11px; border-radius:10px; font-size:13px; font-weight:600;">__I18N_DEEPLINK__</a>
     <div class="stat" id="udpinfo" style="margin-top:8px; color:#a8a0a3;"></div>
   </div>
   <div class="card">
-    <div style="font-size:12px; color:#a8a0a3; margin-bottom:10px;">網頁快速測試（需保持螢幕開啟）</div>
-    <button id="toggle">開始網頁串流 IMU</button>
-    <button id="cal">一鍵校正原點</button>
+    <div style="font-size:12px; color:#a8a0a3; margin-bottom:10px;">__I18N_WEB_TEST__</div>
+    <button id="toggle">__I18N_TOGGLE_START__</button>
+    <button id="cal">__I18N_CALIBRATE__</button>
     <div class="stat" id="readout">ax: 0.00 | ay: 0.00 | gz: 0.00</div>
     <div class="stat" id="hz">0 Hz</div>
   </div>
@@ -1074,12 +1076,21 @@ QByteArray SensorServer::buildPhoneHtml() const
 const UDP_PORT = __UDP_PORT__;
 const LAN_IP = "__LAN_IP__";
 const TS_IP = "__TS_IP__";
+// Localised UI strings, substituted server-side (see buildPhoneHtml()).
+const STR_CONNECTED = "__I18N_CONNECTED__";
+const STR_RECONNECTING = "__I18N_RECONNECTING__";
+const STR_NO_PERMISSION = "__I18N_NO_PERMISSION__";
+const STR_START = "__I18N_TOGGLE_START__";
+const STR_STOP = "__I18N_STOP__";
+const STR_STOPPED = "__I18N_STOPPED__";
+const STR_CALIBRATED = "__I18N_CALIBRATED__";
+const STR_UDP_ADDR = "__I18N_UDP_ADDR__";
 const hostIp = location.hostname;
 const qs = new URLSearchParams({ host: hostIp, port: String(UDP_PORT) });
 if (LAN_IP) qs.set('lan', LAN_IP);
 if (TS_IP) qs.set('ts', TS_IP);
 document.getElementById('deeplink').href = `steady://connect?${qs.toString()}`;
-document.getElementById('udpinfo').textContent = `UDP 位址：${hostIp}:${UDP_PORT}`;
+document.getElementById('udpinfo').textContent = STR_UDP_ADDR.replace('%1', hostIp).replace('%2', String(UDP_PORT));
 
 let running = false, ws = null, wakeLock = null, sent = 0, lastTick = performance.now(), retryMs = 1000, retryTimer = null;
 const statusEl = document.getElementById('status');
@@ -1092,10 +1103,10 @@ function connectWs() {
   if (!running) return;
   const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
   ws = new WebSocket(proto + location.host + '/ws');
-  ws.onopen = () => { retryMs = 1000; statusEl.textContent = '已連線 (WSS 串流中)'; };
+  ws.onopen = () => { retryMs = 1000; statusEl.textContent = STR_CONNECTED; };
   ws.onclose = () => {
     if (running) {
-      statusEl.textContent = `重連中 (${Math.round(retryMs/1000)}s)...`;
+      statusEl.textContent = STR_RECONNECTING.replace('%1', Math.round(retryMs / 1000));
       retryTimer = setTimeout(connectWs, retryMs);
       retryMs = Math.min(retryMs * 2, 10000);
     }
@@ -1137,11 +1148,11 @@ toggleBtn.onclick = async () => {
   if (!running) {
     if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
       const res = await DeviceMotionEvent.requestPermission();
-      if (res !== 'granted') { statusEl.textContent = '未授予感應器權限'; return; }
+      if (res !== 'granted') { statusEl.textContent = STR_NO_PERMISSION; return; }
     }
     running = true;
     retryMs = 1000;
-    toggleBtn.textContent = '停止串流';
+    toggleBtn.textContent = STR_STOP;
     toggleBtn.classList.add('active');
     connectWs();
     window.addEventListener('devicemotion', onMotion, true);
@@ -1149,9 +1160,9 @@ toggleBtn.onclick = async () => {
   } else {
     running = false;
     if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
-    toggleBtn.textContent = '開始網頁串流 IMU';
+    toggleBtn.textContent = STR_START;
     toggleBtn.classList.remove('active');
-    statusEl.textContent = '已停止';
+    statusEl.textContent = STR_STOPPED;
     window.removeEventListener('devicemotion', onMotion, true);
     if (ws) { ws.close(); ws = null; }
     if (wakeLock) { wakeLock.release(); wakeLock = null; }
@@ -1164,7 +1175,7 @@ calBtn.onclick = () => {
   } else {
     fetch('/calibrate', { method: 'POST' }).catch(() => {});
   }
-  statusEl.textContent = '已送出原點校正';
+  statusEl.textContent = STR_CALIBRATED;
 };
 </script>
 </body>
@@ -1173,5 +1184,26 @@ calBtn.onclick = () => {
     html.replace(QStringLiteral("__UDP_PORT__"), QString::number(m_udpPort));
     html.replace(QStringLiteral("__LAN_IP__"), m_lanIp);
     html.replace(QStringLiteral("__TS_IP__"), m_tailscaleIp);
+    // Localised strings: tr() resolves against the translator installed at
+    // request time, so the page follows the desktop language setting.
+    html.replace(QStringLiteral("__I18N_HTML_LANG__"), m_language);
+    html.replace(QStringLiteral("__I18N_PAGE_TITLE__"), tr("Steady 手機 IMU"));
+    html.replace(QStringLiteral("__I18N_BADGE__"), tr("待機中"));
+    html.replace(QStringLiteral("__I18N_HEADING__"), tr("Steady 手機感應器"));
+    html.replace(QStringLiteral("__I18N_INTRO__"),
+                 tr("想要<b>%1</b>省電持續傳送，請安裝下方 Android 背景版 APK（12.5 Hz 活躍／靜止自動降 1 Hz）。")
+                     .arg(tr("縮小 App 或關螢幕")));
+    html.replace(QStringLiteral("__I18N_DOWNLOAD_APK__"), tr("下載 Android 背景版 APK（省電推薦）"));
+    html.replace(QStringLiteral("__I18N_DEEPLINK__"), tr("已安裝？點此自動帶入目前 IP 開啟 App"));
+    html.replace(QStringLiteral("__I18N_WEB_TEST__"), tr("網頁快速測試（需保持螢幕開啟）"));
+    html.replace(QStringLiteral("__I18N_TOGGLE_START__"), tr("開始網頁串流 IMU"));
+    html.replace(QStringLiteral("__I18N_CALIBRATE__"), tr("一鍵校正原點"));
+    html.replace(QStringLiteral("__I18N_CONNECTED__"), tr("已連線 (WSS 串流中)"));
+    html.replace(QStringLiteral("__I18N_RECONNECTING__"), tr("重連中 (%1s)..."));
+    html.replace(QStringLiteral("__I18N_NO_PERMISSION__"), tr("未授予感應器權限"));
+    html.replace(QStringLiteral("__I18N_STOP__"), tr("停止串流"));
+    html.replace(QStringLiteral("__I18N_STOPPED__"), tr("已停止"));
+    html.replace(QStringLiteral("__I18N_CALIBRATED__"), tr("已送出原點校正"));
+    html.replace(QStringLiteral("__I18N_UDP_ADDR__"), tr("UDP 位址：%1:%2"));
     return html.toUtf8();
 }
