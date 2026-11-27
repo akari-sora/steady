@@ -62,11 +62,12 @@ public class ImuService extends Service {
     private boolean foregroundStarted = false;
     private String notifHost = "";
     private int notifPort = 8766;
-    private String notifDetail = "靜止自動降頻至 1Hz";
+    private String notifDetail = "";
 
     @Override
     public void onCreate() {
         super.onCreate();
+        notifDetail = getString(R.string.notif_detail_idle_down);
         createNotificationChannel();
         sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
         watchNetwork();
@@ -112,14 +113,14 @@ public class ImuService extends Service {
         long stopOverride = TimeoutSource.unreachableMs(0L, debugOverride("debug.steady.unreachable_ms"));
         long stillOverride = TimeoutSource.stillMs(0L, debugOverride("debug.steady.still_ms"));
 
-        if (!promoteToForeground(host.isEmpty() ? "未設定" : host, port)) {
+        if (!promoteToForeground(host.isEmpty() ? getString(R.string.not_set) : host, port)) {
             TelemetryState.running = false;
             stopSelf();
             return START_NOT_STICKY;
         }
 
         if (host.isEmpty()) {
-            TelemetryState.lastError = "未設定目標 IP";
+            TelemetryState.lastError = getString(R.string.error_no_target);
             stopStreaming(null);
             return START_NOT_STICKY;
         }
@@ -203,7 +204,7 @@ public class ImuService extends Service {
             foregroundStarted = true;
             return true;
         } catch (Exception e) {
-            TelemetryState.lastError = "無法啟動前景服務：" + e.getMessage();
+            TelemetryState.lastError = getString(R.string.error_start_foreground, e.getMessage());
             return false;
         }
     }
@@ -227,7 +228,7 @@ public class ImuService extends Service {
         TelemetryState.running = true;
         TelemetryState.powerSavingIdle = false;
         TelemetryState.desktopReachable = true;
-        TelemetryState.powerModeLabel = "行車 12.5Hz";
+        TelemetryState.powerModeLabel = getString(R.string.mode_driving);
 
         StreamSession session = new StreamSession(host, port, stopOverride, stillOverride);
         activeSession = session;
@@ -270,7 +271,7 @@ public class ImuService extends Service {
         TelemetryState.powerSavingIdle = false;
         TelemetryState.desktopReachable = true;
         TelemetryState.hz = 0;
-        TelemetryState.powerModeLabel = "待機";
+        TelemetryState.powerModeLabel = getString(R.string.mode_standby);
 
         if (foregroundStarted) {
             try {
@@ -312,10 +313,10 @@ public class ImuService extends Service {
         if (nm == null) return;
         NotificationChannel ch = new NotificationChannel(
             CHANNEL_ID,
-            "Steady IMU 背景串流",
+            getString(R.string.channel_name),
             NotificationManager.IMPORTANCE_LOW
         );
-        ch.setDescription("維持手機加速度計與陀螺儀背景傳送給 Steady");
+        ch.setDescription(getString(R.string.channel_desc));
         ch.setShowBadge(false);
         nm.createNotificationChannel(ch);
     }
@@ -341,12 +342,12 @@ public class ImuService extends Service {
 
         return new Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_steady)
-            .setContentTitle("Steady 背景串流中（省電自適應）")
+            .setContentTitle(getString(R.string.notif_title_streaming))
             .setContentText("UDP → " + host + ":" + port + " · " + notifDetail)
             .setOngoing(true)
             .setContentIntent(openPi)
-            .addAction(new Notification.Action.Builder(null, "校正原點", calPi).build())
-            .addAction(new Notification.Action.Builder(null, "停止", stopPi).build())
+            .addAction(new Notification.Action.Builder(null, getString(R.string.action_calibrate), calPi).build())
+            .addAction(new Notification.Action.Builder(null, getString(R.string.action_stop), stopPi).build())
             .build();
     }
 
@@ -359,7 +360,7 @@ public class ImuService extends Service {
         );
         Notification n = new Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_steady)
-            .setContentTitle("Steady 已自動停止省電")
+            .setContentTitle(getString(R.string.notif_title_auto_stopped))
             .setContentText(reason)
             .setAutoCancel(true)
             .setContentIntent(openPi)
@@ -433,7 +434,7 @@ public class ImuService extends Service {
                 try {
                     socket.send(new DatagramPacket(CALIBRATE, CALIBRATE.length, targetAddr, port));
                 } catch (Exception e) {
-                    TelemetryState.lastError = "校正送出失敗：" + e.getMessage();
+                    TelemetryState.lastError = getString(R.string.error_calibrate_send, e.getMessage());
                 }
             });
         }
@@ -497,7 +498,7 @@ public class ImuService extends Service {
                 openConnected(InetAddress.getByName(host));
             } catch (Exception e) {
                 teardownOnWorker();
-                requestSessionStop(this, "網路初始化失敗：" + e.getMessage(), null);
+                requestSessionStop(this, getString(R.string.error_network_init, e.getMessage()), null);
                 return;
             }
 
@@ -515,12 +516,12 @@ public class ImuService extends Service {
             gyroSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
             if (accelSensor == null) {
                 teardownOnWorker();
-                requestSessionStop(this, "裝置找不到加速度計", null);
+                requestSessionStop(this, getString(R.string.error_no_accel), null);
                 return;
             }
 
-            String label = gravityIncluded ? "加速度計" : "線性加速度";
-            if (gyroSensor != null) label += " + 陀螺儀";
+            String label = gravityIncluded ? getString(R.string.sensor_accel) : getString(R.string.sensor_linear_accel);
+            if (gyroSensor != null) label += getString(R.string.sensor_plus_gyro);
             TelemetryState.sensorLabel = label;
             Log.i(LOG_TAG, "accel type=" + accelSensor.getType()
                 + " grav=" + gravityIncluded
@@ -601,7 +602,7 @@ public class ImuService extends Service {
                 openConnected(fresh);
                 Log.i(LOG_TAG, "target refreshed " + currentIp);
             } catch (Exception e) {
-                TelemetryState.lastError = "重新解析失敗：" + e.getMessage();
+                TelemetryState.lastError = getString(R.string.error_reresolve, e.getMessage());
             }
         }
 
@@ -628,17 +629,17 @@ public class ImuService extends Service {
                     if (socket != null) {
                         socket.send(discoverPacket);
                         String err = TelemetryState.lastError;
-                        if (err != null && err.startsWith("探測失敗")) TelemetryState.lastError = "";
+                        if (err != null && err.startsWith(getString(R.string.error_probe_failed, ""))) TelemetryState.lastError = "";
                     }
                 } catch (Exception e) {
-                    TelemetryState.lastError = "探測失敗：" + e.getMessage();
+                    TelemetryState.lastError = getString(R.string.error_probe_failed, e.getMessage());
                 }
                 probe.markSent(now);
             }
             pumpReceive(now);
             if (probe.shouldStop(now)) {
                 teardownOnWorker();
-                requestSessionStop(this, UNREACHABLE, "桌面端無法連線超過 5 分鐘，已自動停止");
+                requestSessionStop(this, UNREACHABLE, getString(R.string.auto_stop_unreachable));
                 return;
             }
             syncSensorMode(motionIdle || !probe.samplesEnabled());
@@ -692,13 +693,14 @@ public class ImuService extends Service {
             } else if (gyroWanted && !gyroOk) {
                 gyroOk = registerSensor(gyroSensor, StreamTiming.BIND_FALLBACK_PERIOD_US, StreamTiming.BIND_FALLBACK_LATENCY_US);
             }
-            SensorBind decision = SensorBind.after(accelOk, gyroWanted, gyroOk, idle, accelRetried);
+            SensorBind decision = SensorBind.after(accelOk, gyroWanted, gyroOk, idle, accelRetried,
+                getString(R.string.error_accel_register), getString(R.string.error_gyro_missing));
             Log.i(LOG_TAG, "sensors idle=" + idle + " periodUs=" + period + " latencyUs=" + latency
                 + " step=" + decision.step + " accel=" + accelOk + " gyro=" + gyroOk);
             if (decision.step != SensorBind.Step.BOUND || !decision.bound) {
                 sensorsBound = false;
                 sensorsAreIdle = false;
-                String err = decision.error == null ? "無法註冊加速度計" : decision.error;
+                String err = decision.error == null ? getString(R.string.error_accel_register) : decision.error;
                 teardownOnWorker();
                 requestSessionStop(this, err, err);
                 return;
@@ -723,16 +725,16 @@ public class ImuService extends Service {
                 mode = UNREACHABLE;
                 TelemetryState.lastError = UNREACHABLE;
             } else if (gyroGaveUp && !idle) {
-                detail = "行車 12.5Hz · 陀螺儀未註冊";
-                mode = "行車 12.5Hz · 無陀螺儀";
+                detail = getString(R.string.detail_driving_no_gyro);
+                mode = getString(R.string.mode_driving_no_gyro);
                 if (UNREACHABLE.equals(TelemetryState.lastError)) TelemetryState.lastError = "";
             } else if (idle) {
-                detail = "靜止 1Hz · 移動即刻恢復";
-                mode = "靜止省電 1Hz";
+                detail = getString(R.string.detail_idle);
+                mode = getString(R.string.mode_idle);
                 if (UNREACHABLE.equals(TelemetryState.lastError)) TelemetryState.lastError = "";
             } else {
-                detail = "行車 12.5Hz";
-                mode = "行車 12.5Hz";
+                detail = getString(R.string.mode_driving);
+                mode = getString(R.string.mode_driving);
                 if (UNREACHABLE.equals(TelemetryState.lastError)) TelemetryState.lastError = "";
             }
             TelemetryState.powerModeLabel = mode;
@@ -776,12 +778,16 @@ public class ImuService extends Service {
             if (stopped || out == null) return;
             if (out.kind == StreamOutput.Kind.STOP_STILL) {
                 teardownOnWorker();
-                requestSessionStop(this, null, "已靜止 20 分鐘，自動停止串流省電");
+                requestSessionStop(this, null, getString(R.string.auto_stop_still));
                 return;
             }
             if (out.kind == StreamOutput.Kind.STOP_SENSOR) {
                 teardownOnWorker();
-                requestSessionStop(this, out.error, out.error);
+                // StreamOutput only reports its SENSOR_ERROR sentinel here;
+                // show the localised text instead of the zh-TW source string.
+                String sensorError = StreamOutput.SENSOR_ERROR.equals(out.error)
+                    ? getString(R.string.error_sensor_values) : out.error;
+                requestSessionStop(this, sensorError, sensorError);
                 return;
             }
             motionIdle = out.motionIdle;
@@ -825,13 +831,13 @@ public class ImuService extends Service {
                     backoffMs = 1000L;
                 } else if (now - firstErrorMs >= DesktopProbe.UNREACHABLE_STOP_MS) {
                     teardownOnWorker();
-                    requestSessionStop(this, "連續 5 分鐘無法連線，已自動停止", "無法連線到電腦，已自動停止省電");
+                    requestSessionStop(this, getString(R.string.error_unreachable_5min), getString(R.string.auto_stop_unreachable_5min));
                     return;
                 } else {
                     backoffMs = Math.min(backoffMs * 2L, 5000L);
                 }
                 nextRetryMs = now + backoffMs;
-                TelemetryState.lastError = "UDP 傳送重試中 (" + (backoffMs / 1000L) + "s)";
+                TelemetryState.lastError = getString(R.string.error_udp_retry, backoffMs / 1000L);
             }
         }
 
