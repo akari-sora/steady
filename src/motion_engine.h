@@ -34,6 +34,10 @@ class MotionEngine : public QObject {
     Q_PROPERTY(QString imuSource READ imuSource NOTIFY imuStatusChanged)
     Q_PROPERTY(QString calibrationHint READ calibrationHint NOTIFY imuStatusChanged)
 
+    // UI language: "system" (follow QLocale::system), "zh-Hant" or "en".
+    // Persisted in settings.ini; the translator is (re)installed by main().
+    Q_PROPERTY(QString language READ language WRITE setLanguage NOTIFY languageChanged)
+
 public:
     enum class Timing { Realtime, Manual };
     enum class SimulationTimeout { Enabled, Disabled };
@@ -89,8 +93,15 @@ public:
 
     int imuHz() const { return m_imuHz; }
     bool phoneConnected() const { return m_phoneConnected; }
-    QString imuSource() const { return m_imuSource; }
-    QString calibrationHint() const { return m_calibrationHint; }
+    QString imuSource() const;
+    QString calibrationHint() const;
+
+    QString language() const { return m_language; }
+    void setLanguage(const QString &language);
+    static bool validLanguage(const QString &language);
+    // Re-emit status signals after the translator changes so QML re-reads
+    // the computed imuSource()/calibrationHint() strings.
+    void retranslate();
 
     static constexpr double minimumVisibleOpacity = 0.01;
 
@@ -116,6 +127,7 @@ signals:
     void frameUpdated();
     void telemetryUpdated();
     void imuStatusChanged();
+    void languageChanged();
 
 private:
     void step();
@@ -190,6 +202,13 @@ private:
     int m_packetCount = 0;
     int m_imuHz = 0;
     bool m_phoneConnected = false;
-    QString m_imuSource = QStringLiteral("等待手機訊號...");
-    QString m_calibrationHint = QStringLiteral("尚未校正");
+
+    // IMU source as a language-neutral key; imuSource() translates it on read
+    // so switching languages updates the panel without new packets.
+    // "sim" / "waiting" / "transport:udp" / "transport:https" / "transport:wss",
+    // or "custom:<label>" for a free-form "src" sent by the phone (kept verbatim).
+    QString m_sourceKey = QStringLiteral("waiting");
+    bool m_calibrated = false;
+
+    QString m_language = QStringLiteral("system");
 };

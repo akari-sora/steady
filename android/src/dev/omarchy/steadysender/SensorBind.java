@@ -27,14 +27,28 @@ public final class SensorBind {
      */
     public static SensorBind after(boolean accelOk, boolean gyroWanted, boolean gyroOk,
                                    boolean wantIdle, boolean isRetry) {
+        // zh-TW source strings; the service passes localised text via the
+        // overload below. Plain-JVM unit tests use this form unchanged.
+        return after(accelOk, gyroWanted, gyroOk, wantIdle, isRetry,
+                     "無法註冊加速度計", "陀螺儀未註冊，僅以加速度計運作");
+    }
+
+    /**
+     * Same decision, with caller-supplied (localised) error text. The service
+     * passes {@code getString(R.string.error_accel_register)} and
+     * {@code getString(R.string.error_gyro_missing)} here.
+     */
+    public static SensorBind after(boolean accelOk, boolean gyroWanted, boolean gyroOk,
+                                   boolean wantIdle, boolean isRetry,
+                                   String accelError, String gyroError) {
         if (!accelOk) {
             if (!isRetry) {
                 return new SensorBind(Step.RETRY, false, false, false, null);
             }
-            return new SensorBind(Step.STOP, false, false, false, "無法註冊加速度計");
+            return new SensorBind(Step.STOP, false, false, false, accelError);
         }
         if (gyroWanted && !gyroOk) {
-            return new SensorBind(Step.BOUND, true, wantIdle, false, "陀螺儀未註冊，僅以加速度計運作");
+            return new SensorBind(Step.BOUND, true, wantIdle, false, gyroError);
         }
         return new SensorBind(Step.BOUND, true, wantIdle, gyroWanted, null);
     }

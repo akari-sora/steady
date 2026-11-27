@@ -12,6 +12,19 @@ constexpr double kMaxAccelClamp = 50.0;
 constexpr double kMaxGyroClamp = 20.0;
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kAutoHideDelaySec = 3.0;
+
+// Language-neutral key for an ingest source label: the "transport:*" keys
+// are translated by imuSource(), anything else is a free-form phone "src"
+// kept verbatim (custom labels, e.g. from tests, must survive unchanged).
+QString sourceKeyFor(const QString &source)
+{
+    if (source == QLatin1String("transport:udp") || source == QLatin1String("transport:https")
+        || source == QLatin1String("transport:wss")) {
+        return source;
+    }
+    return QStringLiteral("custom:") + source;
+}
+
 constexpr double kGravityTauSec = 20.0;
 constexpr int kSimulationTimeoutMs = 10 * 60 * 1000;
 }
@@ -105,9 +118,9 @@ void MotionEngine::setMode(const QString &m)
     m_mode = m;
     m_stillSeconds = 0.0;
     if (m_mode == QLatin1String("sim")) {
-        m_imuSource = QStringLiteral("模擬訊號 (Simulation)");
-    } else {
-        m_imuSource = m_phoneConnected ? m_imuSource : QStringLiteral("等待手機訊號...");
+        m_sourceKey = QStringLiteral("sim");
+    } else if (!m_phoneConnected) {
+        m_sourceKey = QStringLiteral("waiting");
     }
     resumeSimulation();
     updateSimulationTimeout();
@@ -230,7 +243,7 @@ void MotionEngine::calibrate()
     m_velX = 0.0;
     m_velY = 0.0;
     m_stillSeconds = 0.0;
-    m_calibrationHint = QStringLiteral("已校正原點");
+    m_calibrated = true;
     emit imuStatusChanged();
     emit frameUpdated();
     emit telemetryUpdated();
@@ -266,6 +279,8 @@ void MotionEngine::loadSettings(const QSettings &settings)
     setEdgeMargin(number(QStringLiteral("margin"), m_edgeMargin));
     setAutoHide(settings.value(QStringLiteral("autoHide"), m_autoHide).toBool());
     setUseAccentColor(settings.value(QStringLiteral("accent"), m_useAccentColor).toBool());
+    const QString language = settings.value(QStringLiteral("language"), m_language).toString();
+    if (validLanguage(language)) m_language = language;
 }
 
 void MotionEngine::saveSettings(QSettings &settings) const
@@ -279,6 +294,7 @@ void MotionEngine::saveSettings(QSettings &settings) const
     settings.setValue(QStringLiteral("margin"), m_edgeMargin);
     settings.setValue(QStringLiteral("autoHide"), m_autoHide);
     settings.setValue(QStringLiteral("accent"), m_useAccentColor);
+    settings.setValue(QStringLiteral("language"), m_language);
 }
 
 void MotionEngine::disconnectImu()
@@ -295,7 +311,41 @@ void MotionEngine::resetImuCalibration()
     m_lastGravityIncluded = false;
     m_biasX = 0.0;
     m_biasY = 0.0;
-    m_calibrationHint = QStringLiteral("尚未校正");
+    m_calibrated = false;
+}
+
+QString MotionEngine::imuSource() const
+{
+    if (m_sourceKey == QLatin1String("sim")) return tr("模擬訊號 (Simulation)");
+    if (m_sourceKey == QLatin1String("waiting")) return tr("等待手機訊號...");
+    if (m_sourceKey == QLatin1String("transport:udp")) return tr("UDP 感應器");
+    if (m_sourceKey == QLatin1String("transport:https")) return tr("手機網頁 (HTTPS)");
+    if (m_sourceKey == QLatin1String("transport:wss")) return tr("手機網頁 (WSS)");
+    if (m_sourceKey.startsWith(QLatin1String("custom:"))) return m_sourceKey.sliced(7);
+    return m_sourceKey;
+}
+
+QString MotionEngine::calibrationHint() const
+{
+    return m_calibrated ? tr("已校正原點") : tr("尚未校正");
+}
+
+bool MotionEngine::validLanguage(const QString &language)
+{
+    return language == QLatin1String("system") || language == QLatin1String("zh-Hant")
+        || language == QLatin1String("en");
+}
+
+void MotionEngine::setLanguage(const QString &language)
+{
+    if (!validLanguage(language) || m_language == language) return;
+    m_language = language;
+    emit languageChanged();
+}
+
+void MotionEngine::retranslate()
+{
+    emit imuStatusChanged();
 }
 
 bool MotionEngine::ingestImu(double ax, double ay, double az,
@@ -358,10 +408,11 @@ bool MotionEngine::ingestImu(double ax, double ay, double az,
         if (m_timing == Timing::Realtime) m_watchdogTimer.start();
     }
 
-    if (!m_phoneConnected || m_imuSource != source) {
+    const QString sourceKey = sourceKeyFor(source);
+    if (!m_phoneConnected || m_sourceKey != sourceKey) {
         const bool newlyConnected = !m_phoneConnected;
         m_phoneConnected = true;
-        m_imuSource = source;
+        m_sourceKey = sourceKey;
         if (newlyConnected && m_mode != QLatin1String("phone")) {
             m_mode = QStringLiteral("phone");
             if (m_simulationPaused) {
@@ -403,7 +454,7 @@ void MotionEngine::checkImuWatchdog()
         m_rawLinY = 0.0;
         m_rawGyroZ = 0.0;
         if (m_mode == QLatin1String("phone")) {
-            m_imuSource = QStringLiteral("等待手機訊號...");
+            m_sourceKey = QStringLiteral("waiting");
             changed = true;
         }
         m_watchdogTimer.stop();

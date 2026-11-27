@@ -155,7 +155,7 @@ public class MainActivity extends Activity {
             applyDeepLink(intent);
         } catch (RuntimeException e) {
             pendingConfirm = null;
-            linkNote = "已拒絕連線連結";
+            linkNote = getString(R.string.toast_link_rejected);
             try {
                 Toast.makeText(this, linkNote, Toast.LENGTH_LONG).show();
                 refreshUi();
@@ -196,13 +196,21 @@ public class MainActivity extends Activity {
         if (req == null) return;
         if (!req.ok()) {
             pendingConfirm = null;
-            linkNote = "已拒絕 " + req.error;
+            linkNote = getString(R.string.toast_link_rejected_named, linkErrorText(req.error));
             Toast.makeText(this, linkNote, Toast.LENGTH_LONG).show();
             refreshUi();
             return;
         }
         pendingConfirm = req;
         if (hasWindowFocus()) showPendingConfirm();
+    }
+
+    /** Localised text for a DeepLinkRequest rejection code ("bad uri"/"bad host"/"bad port"). */
+    private String linkErrorText(String code) {
+        if ("bad host".equals(code)) return getString(R.string.error_link_bad_host);
+        if ("bad port".equals(code)) return getString(R.string.error_link_bad_port);
+        if ("bad uri".equals(code)) return getString(R.string.error_link_bad_uri);
+        return code;
     }
 
     private void showPendingConfirm() {
@@ -214,21 +222,22 @@ public class MainActivity extends Activity {
         String curTs = prefs.getString(KEY_TS_IP, "");
         if (!req.applyAllowed(curHost, curPort, curLan, curTs)) {
             pendingConfirm = null;
-            linkNote = "已拒絕未完整顯示的連線";
+            linkNote = getString(R.string.toast_link_incomplete);
             Toast.makeText(this, linkNote, Toast.LENGTH_LONG).show();
             refreshUi();
             return;
         }
         pendingConfirm = null;
-        final String msg = req.confirmMessage(curHost, curPort, curLan, curTs);
+        final String msg = req.confirmMessage(curHost, curPort, curLan, curTs,
+            getString(R.string.empty_label));
         if (confirmDialog != null) confirmDialog.dismiss();
         confirmDialog = new AlertDialog.Builder(this)
-            .setTitle("確認連線目標")
+            .setTitle(getString(R.string.dialog_confirm_target))
             .setMessage(msg)
-            .setPositiveButton("確認", (d, w) -> {
+            .setPositiveButton(getString(R.string.dialog_confirm), (d, w) -> {
                 if (req.disclosed(msg)) applyConfirmed(req);
             })
-            .setNegativeButton("取消", (d, w) -> { })
+            .setNegativeButton(getString(R.string.dialog_cancel), (d, w) -> { })
             .create();
         confirmDialog.show();
     }
@@ -244,7 +253,7 @@ public class MainActivity extends Activity {
         savePrefs();
         updateChipLabels();
         linkNote = "";
-        Toast.makeText(this, "已改為 " + hostInput.getText(), Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, getString(R.string.toast_changed_to, hostInput.getText()), Toast.LENGTH_SHORT).show();
         if (TelemetryState.running && (req.host != null || req.port > 0)) {
             restartStream();
         }
@@ -259,18 +268,18 @@ public class MainActivity extends Activity {
         final String cur = hostInput.getText().toString().trim();
         final String port = portInput.getText().toString().trim();
         final String msg = label
-            + "\nhost: " + (cur.isEmpty() ? "(空)" : cur) + " → " + next
+            + "\nhost: " + (cur.isEmpty() ? getString(R.string.empty_label) : cur) + " → " + next
             + "\nport: " + port;
         new AlertDialog.Builder(this)
-            .setTitle("確認連線目標")
+            .setTitle(getString(R.string.dialog_confirm_target))
             .setMessage(msg)
-            .setPositiveButton("確認", (d, w) -> {
+            .setPositiveButton(getString(R.string.dialog_confirm), (d, w) -> {
                 hostInput.setText(next);
                 savePrefs();
                 updateChipLabels();
                 if (TelemetryState.running) restartStream();
             })
-            .setNegativeButton("取消", null)
+            .setNegativeButton(getString(R.string.dialog_cancel), null)
             .show();
     }
 
@@ -285,7 +294,7 @@ public class MainActivity extends Activity {
         try {
             startForegroundService(start);
         } catch (Exception e) {
-            TelemetryState.lastError = "無法改連線目標：" + e.getMessage();
+            TelemetryState.lastError = getString(R.string.error_retarget, e.getMessage());
         }
     }
 
@@ -326,7 +335,7 @@ public class MainActivity extends Activity {
         root.addView(title);
 
         TextView subtitle = new TextView(this);
-        subtitle.setText("省電背景 IMU 串流（行車 12.5Hz · 靜止 1Hz · 電腦無回應會停）");
+        subtitle.setText(getString(R.string.app_subtitle));
         subtitle.setTextColor(COLOR_MUTED);
         subtitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         LinearLayout.LayoutParams subLp = new LinearLayout.LayoutParams(
@@ -340,11 +349,11 @@ public class MainActivity extends Activity {
         LinearLayout controlCard = makeCard();
         root.addView(controlCard, cardParams());
 
-        toggleBtn = makeButton("開始背景串流", COLOR_ACCENT, COLOR_BG);
+        toggleBtn = makeButton(getString(R.string.btn_start_stream), COLOR_ACCENT, COLOR_BG);
         toggleBtn.setOnClickListener(v -> onToggleClicked());
         controlCard.addView(toggleBtn, buttonParams(dp(10)));
 
-        calibrateBtn = makeButton("一鍵校正原點", COLOR_BTN_DARK, COLOR_TEXT);
+        calibrateBtn = makeButton(getString(R.string.btn_calibrate), COLOR_BTN_DARK, COLOR_TEXT);
         calibrateBtn.setOnClickListener(v -> onCalibrateClicked());
         controlCard.addView(calibrateBtn, buttonParams(dp(12)));
 
@@ -382,7 +391,7 @@ public class MainActivity extends Activity {
         root.addView(netCard, cardParams());
 
         TextView netTitle = new TextView(this);
-        netTitle.setText("目標 Omarchy 筆電（UDP）");
+        netTitle.setText(getString(R.string.net_title));
         netTitle.setTextColor(COLOR_TEXT);
         netTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         netTitle.setTypeface(Typeface.DEFAULT_BOLD);
@@ -400,32 +409,32 @@ public class MainActivity extends Activity {
         chipRowLp.bottomMargin = dp(10);
         netCard.addView(chipRow, chipRowLp);
 
-        lanChipBtn = makeSmallButton("區網 Wi-Fi", COLOR_BTN_DARK, COLOR_TEXT);
+        lanChipBtn = makeSmallButton(getString(R.string.chip_lan_btn), COLOR_BTN_DARK, COLOR_TEXT);
         lanChipBtn.setOnClickListener(v -> {
             String lan = prefs.getString(KEY_LAN_IP, "");
             if (lan.isEmpty()) {
                 discoverOmarchy();
             } else {
-                confirmHost(lan, "區網");
+                confirmHost(lan, getString(R.string.confirm_lan_label));
             }
         });
         LinearLayout.LayoutParams c1 = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         c1.rightMargin = dp(8);
         chipRow.addView(lanChipBtn, c1);
 
-        tsChipBtn = makeSmallButton("Tailscale", COLOR_BTN_DARK, COLOR_TEXT);
+        tsChipBtn = makeSmallButton(getString(R.string.chip_tailscale), COLOR_BTN_DARK, COLOR_TEXT);
         tsChipBtn.setOnClickListener(v -> {
             String ts = prefs.getString(KEY_TS_IP, "");
             if (ts.isEmpty()) {
-                Toast.makeText(this, "尚未記錄 Tailscale IP，請先按自動搜尋或輸入 IP", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, getString(R.string.toast_no_tailscale), Toast.LENGTH_SHORT).show();
             } else {
-                confirmHost(ts, "Tailscale");
+                confirmHost(ts, getString(R.string.chip_tailscale));
             }
         });
         LinearLayout.LayoutParams c2 = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         chipRow.addView(tsChipBtn, c2);
 
-        discoverBtn = makeSmallButton("自動搜尋同區網 Omarchy", COLOR_BTN_DARK, COLOR_ACCENT);
+        discoverBtn = makeSmallButton(getString(R.string.btn_discover), COLOR_BTN_DARK, COLOR_ACCENT);
         discoverBtn.setOnClickListener(v -> discoverOmarchy());
         netCard.addView(discoverBtn, buttonParams(dp(12)));
 
@@ -435,17 +444,17 @@ public class MainActivity extends Activity {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ));
 
-        hostInput = makeEditText("輸入 Omarchy IP 或點自動搜尋", InputType.TYPE_CLASS_TEXT);
+        hostInput = makeEditText(getString(R.string.hint_host), InputType.TYPE_CLASS_TEXT);
         LinearLayout.LayoutParams hLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 2.2f);
         hLp.rightMargin = dp(8);
         inputRow.addView(hostInput, hLp);
 
-        portInput = makeEditText("Port", InputType.TYPE_CLASS_NUMBER);
+        portInput = makeEditText(getString(R.string.hint_port), InputType.TYPE_CLASS_NUMBER);
         LinearLayout.LayoutParams pLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         inputRow.addView(portInput, pLp);
 
         landscapeCheck = new CheckBox(this);
-        landscapeCheck.setText("手機橫放（頂端朝左、充電孔朝右）");
+        landscapeCheck.setText(getString(R.string.check_landscape));
         landscapeCheck.setTextColor(COLOR_MUTED);
         landscapeCheck.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         landscapeCheck.setOnCheckedChangeListener((b, checked) -> {
@@ -468,14 +477,14 @@ public class MainActivity extends Activity {
         root.addView(batCard, cardParams());
 
         TextView batTitle = new TextView(this);
-        batTitle.setText("省電機制與三星 One UI 背景保活");
+        batTitle.setText(getString(R.string.bat_title));
         batTitle.setTextColor(COLOR_TEXT);
         batTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         batTitle.setTypeface(Typeface.DEFAULT_BOLD);
         batCard.addView(batTitle);
 
         TextView batDesc = new TextView(this);
-        batDesc.setText("行車時 25Hz 取樣、兩兩平均後以 12.5Hz 送出（批次 80ms）。靜止 4 秒只留加速度計並以 1Hz 送 idle。約每 10 秒探測電腦，3 次無回應就停止送樣，5 分鐘後關閉。若擔心三星提前休眠，可點下方放行。");
+        batDesc.setText(getString(R.string.bat_desc));
         batDesc.setTextColor(COLOR_MUTED);
         batDesc.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         LinearLayout.LayoutParams bdLp = new LinearLayout.LayoutParams(
@@ -485,7 +494,7 @@ public class MainActivity extends Activity {
         bdLp.bottomMargin = dp(10);
         batCard.addView(batDesc, bdLp);
 
-        batteryBtn = makeSmallButton("允許背景不受電池最佳化限制", COLOR_BTN_DARK, COLOR_TEXT);
+        batteryBtn = makeSmallButton(getString(R.string.btn_battery_allow), COLOR_BTN_DARK, COLOR_TEXT);
         batteryBtn.setOnClickListener(v -> requestBatteryExclusion());
         batCard.addView(batteryBtn, buttonParams(0));
 
@@ -515,8 +524,8 @@ public class MainActivity extends Activity {
     private void updateChipLabels() {
         String lan = prefs.getString(KEY_LAN_IP, "");
         String ts = prefs.getString(KEY_TS_IP, "");
-        lanChipBtn.setText(lan.isEmpty() ? "區網 Wi-Fi\n(點自動搜尋)" : ("區網\n" + lan));
-        tsChipBtn.setText(ts.isEmpty() ? "Tailscale\n(尚未記錄)" : ("Tailscale\n" + ts));
+        lanChipBtn.setText(lan.isEmpty() ? getString(R.string.chip_lan_empty) : getString(R.string.chip_lan, lan));
+        tsChipBtn.setText(ts.isEmpty() ? getString(R.string.chip_ts_empty) : getString(R.string.chip_ts, ts));
     }
 
     private int parsePort() {
@@ -548,7 +557,7 @@ public class MainActivity extends Activity {
 
         String host = sanitizeHost(hostInput.getText().toString());
         if (host == null) {
-            Toast.makeText(this, "請先輸入有效的 Omarchy IP，或點「自動搜尋」", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, getString(R.string.toast_need_host), Toast.LENGTH_SHORT).show();
             return;
         }
         savePrefs();
@@ -561,7 +570,7 @@ public class MainActivity extends Activity {
         try {
             startForegroundService(start);
         } catch (Exception e) {
-            TelemetryState.lastError = "無法啟動背景服務：" + e.getMessage();
+            TelemetryState.lastError = getString(R.string.error_start_service, e.getMessage());
             refreshUi();
             return;
         }
@@ -576,9 +585,9 @@ public class MainActivity extends Activity {
             cal.setAction(ImuService.ACTION_CALIBRATE);
             try {
                 startService(cal);
-                Toast.makeText(this, "已送出原點校正", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, getString(R.string.toast_calibrated), Toast.LENGTH_SHORT).show();
             } catch (Exception e) {
-                Toast.makeText(this, "校正失敗：" + e.getMessage(), Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, getString(R.string.toast_calibrate_failed, e.getMessage()), Toast.LENGTH_SHORT).show();
             }
             return;
         }
@@ -591,13 +600,13 @@ public class MainActivity extends Activity {
                 sock.send(new DatagramPacket(data, data.length, InetAddress.getByName(host), port));
                 uiHandler.post(() -> {
                     if (!isFinishing() && !isDestroyed()) {
-                        Toast.makeText(this, "已送出原點校正", Toast.LENGTH_SHORT).show();
+                        Toast.makeText(this, getString(R.string.toast_calibrated), Toast.LENGTH_SHORT).show();
                     }
                 });
             } catch (Exception e) {
                 uiHandler.post(() -> {
                     if (!isFinishing() && !isDestroyed()) {
-                        Toast.makeText(this, "送出失敗：" + e.getMessage(), Toast.LENGTH_SHORT).show();
+                        Toast.makeText(this, getString(R.string.toast_send_failed, e.getMessage()), Toast.LENGTH_SHORT).show();
                     }
                 });
             }
@@ -606,7 +615,7 @@ public class MainActivity extends Activity {
 
     private void discoverOmarchy() {
         discoverBtn.setEnabled(false);
-        discoverBtn.setText("搜尋中...");
+        discoverBtn.setText(getString(R.string.btn_searching));
         final int port = parsePort();
 
         new Thread(() -> {
@@ -677,9 +686,9 @@ public class MainActivity extends Activity {
     private void presentDiscovery(ArrayList<DiscoveryCommit> offers) {
         if (isFinishing() || isDestroyed()) return;
         discoverBtn.setEnabled(true);
-        discoverBtn.setText("自動搜尋同區網 Omarchy");
+        discoverBtn.setText(getString(R.string.btn_discover));
         if (offers.isEmpty()) {
-            Toast.makeText(this, "區網未收到回應（跨網請用 Tailscale，或確認防火牆放行 UDP 8766）", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, getString(R.string.toast_no_response), Toast.LENGTH_LONG).show();
             return;
         }
         if (offers.size() == 1) {
@@ -692,13 +701,13 @@ public class MainActivity extends Activity {
             labels[i] = c.ts == null ? c.host : (c.host + "  ·  " + c.ts);
         }
         new AlertDialog.Builder(this)
-            .setTitle("確認搜尋到的電腦")
+            .setTitle(getString(R.string.dialog_found_computer))
             .setSingleChoiceItems(labels, 0, null)
-            .setPositiveButton("確認", (d, w) -> {
+            .setPositiveButton(getString(R.string.dialog_confirm), (d, w) -> {
                 int which = ((AlertDialog) d).getListView().getCheckedItemPosition();
                 if (which >= 0 && which < offers.size()) confirmDiscovery(offers.get(which));
             })
-            .setNegativeButton("取消", null)
+            .setNegativeButton(getString(R.string.dialog_cancel), null)
             .show();
     }
 
@@ -707,17 +716,17 @@ public class MainActivity extends Activity {
         final String cur = hostInput.getText().toString().trim();
         final String port = portInput.getText().toString().trim();
         StringBuilder msg = new StringBuilder();
-        msg.append("host: ").append(cur.isEmpty() ? "(空)" : cur).append(" → ").append(offer.host);
+        msg.append("host: ").append(cur.isEmpty() ? getString(R.string.empty_label) : cur).append(" → ").append(offer.host);
         msg.append("\nport: ").append(port);
         if (offer.ts != null) {
             String curTs = prefs.getString(KEY_TS_IP, "");
-            msg.append("\nts: ").append(curTs.isEmpty() ? "(空)" : curTs).append(" → ").append(offer.ts);
+            msg.append("\nts: ").append(curTs.isEmpty() ? getString(R.string.empty_label) : curTs).append(" → ").append(offer.ts);
         }
         final String shown = msg.toString();
         new AlertDialog.Builder(this)
-            .setTitle("確認連線目標")
+            .setTitle(getString(R.string.dialog_confirm_target))
             .setMessage(shown)
-            .setPositiveButton("確認", (d, w) -> {
+            .setPositiveButton(getString(R.string.dialog_confirm), (d, w) -> {
                 if (!shown.contains("→ " + offer.host)) return;
                 DiscoveryCommit kept = offer.confirm();
                 if (!kept.persist()) return;
@@ -727,10 +736,10 @@ public class MainActivity extends Activity {
                 hostInput.setText(kept.host);
                 savePrefs();
                 updateChipLabels();
-                Toast.makeText(this, "已改為 " + kept.host, Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, getString(R.string.toast_changed_to, kept.host), Toast.LENGTH_SHORT).show();
                 if (TelemetryState.running) restartStream();
             })
-            .setNegativeButton("取消", null)
+            .setNegativeButton(getString(R.string.dialog_cancel), null)
             .show();
     }
 
@@ -738,10 +747,10 @@ public class MainActivity extends Activity {
         PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
         boolean ignoring = pm != null && pm.isIgnoringBatteryOptimizations(getPackageName());
         if (ignoring) {
-            batteryBtn.setText("✓ 已允許背景不受電池最佳化限制");
+            batteryBtn.setText(getString(R.string.btn_battery_allowed));
             batteryBtn.setTextColor(0xFF8FD694);
         } else {
-            batteryBtn.setText("允許背景不受電池最佳化限制");
+            batteryBtn.setText(getString(R.string.btn_battery_allow));
             batteryBtn.setTextColor(COLOR_TEXT);
         }
     }
@@ -769,24 +778,24 @@ public class MainActivity extends Activity {
             if (uiState == 3) {
                 statusBadge.setBackground(badgeIdleBg);
                 statusBadge.setTextColor(COLOR_DANGER);
-                statusBadge.setText("● desktop not reachable");
-                toggleBtn.setText("停止背景串流");
+                statusBadge.setText(getString(R.string.badge_unreachable));
+                toggleBtn.setText(getString(R.string.btn_stop_stream));
                 toggleBtn.setBackground(btnStopBg);
                 toggleBtn.setTextColor(Color.WHITE);
             } else if (running) {
                 statusBadge.setBackground(badgeRunningBg);
                 statusBadge.setTextColor(0xFF8FD694);
                 statusBadge.setText(idle
-                    ? "● 靜止省電中 (1Hz) · 移動即刻恢復"
-                    : "● 背景串流中 (12.5Hz) · 可縮小或關螢幕");
-                toggleBtn.setText("停止背景串流");
+                    ? getString(R.string.badge_idle_power)
+                    : getString(R.string.badge_streaming));
+                toggleBtn.setText(getString(R.string.btn_stop_stream));
                 toggleBtn.setBackground(btnStopBg);
                 toggleBtn.setTextColor(Color.WHITE);
             } else {
                 statusBadge.setBackground(badgeIdleBg);
                 statusBadge.setTextColor(COLOR_ACCENT);
-                statusBadge.setText("○ 待機中");
-                toggleBtn.setText("開始背景串流");
+                statusBadge.setText(getString(R.string.badge_idle));
+                toggleBtn.setText(getString(R.string.btn_start_stream));
                 toggleBtn.setBackground(btnStartBg);
                 toggleBtn.setTextColor(COLOR_BG);
             }
@@ -799,20 +808,12 @@ public class MainActivity extends Activity {
         ));
 
         if (running && !reachable) {
-            hzText.setText(String.format(
-                Locale.US,
-                "desktop not reachable · %d 封包",
-                TelemetryState.packetsSent
-            ));
+            hzText.setText(getString(R.string.hz_unreachable, TelemetryState.packetsSent));
         } else if (running) {
-            hzText.setText(String.format(
-                Locale.US,
-                "%d Hz · %s · %s · %d 封包",
-                TelemetryState.hz, TelemetryState.powerModeLabel,
-                TelemetryState.sensorLabel, TelemetryState.packetsSent
-            ));
+            hzText.setText(getString(R.string.hz_running, TelemetryState.hz, TelemetryState.powerModeLabel,
+                TelemetryState.sensorLabel, TelemetryState.packetsSent));
         } else {
-            hzText.setText("0 Hz · 按上方按鈕啟動省電前景服務");
+            hzText.setText(getString(R.string.hz_idle_hint));
         }
 
         String err = (linkNote != null && !linkNote.isEmpty()) ? linkNote : TelemetryState.lastError;
