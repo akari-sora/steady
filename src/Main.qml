@@ -10,7 +10,7 @@ ApplicationWindow {
     minimumWidth: 440
     minimumHeight: 620
     visible: true
-    title: "Steady — 防暈車動態提示"
+    title: qsTr("Steady — 防暈車動態提示")
     color: theme.background
     readonly property string fixedFontFamily: Qt.platform.os === "osx" ? "Menlo"
                                               : Qt.platform.os === "windows" ? "Consolas" : "monospace"
@@ -58,16 +58,16 @@ ApplicationWindow {
                         color: theme.foreground
                     }
                     Label {
-                        text: "防暈眩動態覆蓋層（滑鼠穿透）"
+                        text: qsTr("防暈眩動態覆蓋層（滑鼠穿透）")
                         font.pixelSize: 12
                         color: theme.muted
                     }
                 }
                 Item { Layout.fillWidth: true }
-                Button { text: "離開 (Quit)"; onClicked: Qt.quit() }
+                Button { text: qsTr("離開 (Quit)"); onClicked: Qt.quit() }
                 Switch {
                     checked: motion.overlayEnabled
-                    text: motion.overlayEnabled ? "開啟" : "關閉"
+                    text: motion.overlayEnabled ? qsTr("開啟") : qsTr("關閉")
                     onToggled: motion.overlayEnabled = checked
                 }
             }
@@ -78,13 +78,13 @@ ApplicationWindow {
                 spacing: 8
                 Button {
                     Layout.fillWidth: true
-                    text: "模擬模式 (Simulation)"
+                    text: qsTr("模擬模式 (Simulation)")
                     highlighted: motion.mode === "sim"
                     onClicked: motion.mode = "sim"
                 }
                 Button {
                     Layout.fillWidth: true
-                    text: "手機 IMU 串流"
+                    text: qsTr("手機 IMU 串流")
                     highlighted: motion.mode === "phone"
                     onClicked: motion.mode = "phone"
                 }
@@ -133,7 +133,7 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         spacing: 4
                         Label {
-                            text: "訊號來源：" + motion.imuSource
+                            text: qsTr("訊號來源：%1").arg(motion.imuSource)
                             textFormat: Text.PlainText
                             maximumLineCount: 1
                             font.pixelSize: 13
@@ -144,22 +144,22 @@ ApplicationWindow {
                         }
                         Label {
                             visible: server.lockedSource.length > 0
-                            text: "鎖定來源：" + server.lockedSource
+                            text: qsTr("鎖定來源：%1").arg(server.lockedSource)
                             textFormat: Text.PlainText
                             font.pixelSize: 12
                             color: theme.muted
                             Layout.fillWidth: true
                         }
                         Label {
-                            text: "橫向 G: " + motion.ax.toFixed(2) + " m/s²   縱向 G: " + motion.ay.toFixed(2) + " m/s²"
+                            text: qsTr("橫向 G: %1 m/s²   縱向 G: %2 m/s²").arg(motion.ax.toFixed(2)).arg(motion.ay.toFixed(2))
                             font.pixelSize: 12
                             font.family: root.fixedFontFamily
                             color: theme.muted
                         }
                         Label {
                             text: motion.mode === "phone"
-                                  ? ("連線狀態：" + (motion.phoneConnected ? ("已連線 (" + motion.imuHz + " Hz)") : "尚未連線") + " · " + motion.calibrationHint)
-                                  : ("螢幕邊緣圓點位移：X " + motion.offsetX.toFixed(1) + " px / Y " + motion.offsetY.toFixed(1) + " px")
+                                  ? qsTr("連線狀態：%1 · %2").arg(motion.phoneConnected ? qsTr("已連線 (%1 Hz)").arg(motion.imuHz) : qsTr("尚未連線")).arg(motion.calibrationHint)
+                                  : qsTr("螢幕邊緣圓點位移：X %1 px / Y %2 px").arg(motion.offsetX.toFixed(1)).arg(motion.offsetY.toFixed(1))
                             font.pixelSize: 12
                             color: motion.phoneConnected ? theme.accent : theme.muted
                             wrapMode: Text.WordWrap
@@ -174,11 +174,11 @@ ApplicationWindow {
                 visible: motion.simulationPaused
                 Layout.fillWidth: true
                 Label {
-                    text: "已閒置 10 分鐘，模擬已暫停。"
+                    text: qsTr("已閒置 10 分鐘，模擬已暫停。")
                     color: theme.muted
                     Layout.fillWidth: true
                 }
-                Button { text: "繼續模擬"; onClicked: motion.resumeSimulation() }
+                Button { text: qsTr("繼續模擬"); onClicked: motion.resumeSimulation() }
             }
 
             Rectangle {
@@ -198,7 +198,7 @@ ApplicationWindow {
                     spacing: 10
 
                     Label {
-                        text: "模擬情境"
+                        text: qsTr("模擬情境")
                         font.bold: true
                         font.pixelSize: 13
                         color: theme.foreground
@@ -211,32 +211,32 @@ ApplicationWindow {
                         columnSpacing: 8
                         Button {
                             Layout.fillWidth: true
-                            text: "市區轉彎＋煞車"
+                            text: qsTr("市區轉彎＋煞車")
                             highlighted: motion.simPreset === "city"
                             onClicked: motion.simPreset = "city"
                         }
                         Button {
                             Layout.fillWidth: true
-                            text: "高速公路巡航"
+                            text: qsTr("高速公路巡航")
                             highlighted: motion.simPreset === "highway"
                             onClicked: motion.simPreset = "highway"
                         }
                         Button {
                             Layout.fillWidth: true
-                            text: "山路連續彎道"
+                            text: qsTr("山路連續彎道")
                             highlighted: motion.simPreset === "mountain"
                             onClicked: motion.simPreset = "mountain"
                         }
                         Button {
                             Layout.fillWidth: true
-                            text: "手動點按測試"
+                            text: qsTr("手動點按測試")
                             highlighted: motion.simPreset === "manual"
                             onClicked: motion.simPreset = "manual"
                         }
                     }
 
                     Label {
-                        text: "即時脈衝測試（點了立刻看螢幕左右圓點反應）"
+                        text: qsTr("即時脈衝測試（點了立刻看螢幕左右圓點反應）")
                         font.pixelSize: 12
                         color: theme.muted
                     }
@@ -244,10 +244,10 @@ ApplicationWindow {
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: 6
-                        Button { Layout.fillWidth: true; text: "← 左轉"; onClicked: motion.triggerImpulse(-3.2, 0) }
-                        Button { Layout.fillWidth: true; text: "↑ 加速"; onClicked: motion.triggerImpulse(0, 3.0) }
-                        Button { Layout.fillWidth: true; text: "↓ 煞車"; onClicked: motion.triggerImpulse(0, -3.2) }
-                        Button { Layout.fillWidth: true; text: "→ 右轉"; onClicked: motion.triggerImpulse(3.2, 0) }
+                        Button { Layout.fillWidth: true; text: qsTr("← 左轉"); onClicked: motion.triggerImpulse(-3.2, 0) }
+                        Button { Layout.fillWidth: true; text: qsTr("↑ 加速"); onClicked: motion.triggerImpulse(0, 3.0) }
+                        Button { Layout.fillWidth: true; text: qsTr("↓ 煞車"); onClicked: motion.triggerImpulse(0, -3.2) }
+                        Button { Layout.fillWidth: true; text: qsTr("→ 右轉"); onClicked: motion.triggerImpulse(3.2, 0) }
                     }
                 }
             }
@@ -272,14 +272,14 @@ ApplicationWindow {
                     RowLayout {
                         Layout.fillWidth: true
                         Label {
-                            text: "手機感應器（支援背景 APK / 網頁）"
+                            text: qsTr("手機感應器（支援背景 APK / 網頁）")
                             font.bold: true
                             font.pixelSize: 13
                             color: theme.foreground
                         }
                         Item { Layout.fillWidth: true }
                         Button {
-                            text: server.useTailscaleQr ? "改用區網 IP" : "改用 Tailscale"
+                            text: server.useTailscaleQr ? qsTr("改用區網 IP") : qsTr("改用 Tailscale")
                             enabled: server.tailscaleUrl.length > 0
                             onClicked: server.useTailscaleQr = !server.useTailscaleQr
                         }
@@ -311,7 +311,7 @@ ApplicationWindow {
                             spacing: 6
                             Label {
                                 visible: server.lanUrl.length > 0 || server.tailscaleUrl.length > 0
-                                text: "網址：" + (server.useTailscaleQr && server.tailscaleUrl.length > 0
+                                text: qsTr("網址：%1").arg(server.useTailscaleQr && server.tailscaleUrl.length > 0
                                               ? server.tailscaleUrl : server.lanUrl)
                                 font.family: root.fixedFontFamily
                                 font.pixelSize: 12
@@ -321,7 +321,7 @@ ApplicationWindow {
                             }
                             Label {
                                 visible: server.activeQrUrl.length > 0
-                                text: "1. 手機掃描 QR，首次瀏覽器提示自簽憑證點「繼續前往」\n2. 點「下載 Android 背景版 APK」安裝，之後可縮小、切 App、關螢幕\n3. 開啟 App 點「開始背景串流」即自動切換成手機感應模式"
+                                text: qsTr("1. 手機掃描 QR，首次瀏覽器提示自簽憑證點「繼續前往」\n2. 點「下載 Android 背景版 APK」安裝，之後可縮小、切 App、關螢幕\n3. 開啟 App 點「開始背景串流」即自動切換成手機感應模式")
                                 font.pixelSize: 12
                                 color: theme.muted
                                 wrapMode: Text.WordWrap
@@ -329,7 +329,7 @@ ApplicationWindow {
                             }
                             Label {
                                 visible: server.udpReady
-                                text: "UDP :" + server.udpPort + "（支援自動搜尋區網 / Tailscale / HyperIMU）"
+                                text: qsTr("UDP: %1（支援自動搜尋區網 / Tailscale / HyperIMU）").arg(server.udpPort)
                                 font.pixelSize: 11
                                 color: theme.muted
                                 wrapMode: Text.WordWrap
@@ -341,13 +341,13 @@ ApplicationWindow {
                     RowLayout {
                         Layout.fillWidth: true
                         CheckBox {
-                            text: "鎖定單一手機來源"
+                            text: qsTr("鎖定單一手機來源")
                             checked: server.sourceLockEnabled
                             onToggled: server.sourceLockEnabled = checked
                         }
                         Item { Layout.fillWidth: true }
                         Button {
-                            text: "釋放來源 (Release)"
+                            text: qsTr("釋放來源 (Release)")
                             enabled: server.lockedSource.length > 0
                             onClicked: server.releaseSource()
                         }
@@ -358,12 +358,12 @@ ApplicationWindow {
                         spacing: 8
                         Button {
                             Layout.fillWidth: true
-                            text: "一鍵校正原點 (C)"
+                            text: qsTr("一鍵校正原點 (C)")
                             highlighted: true
                             onClicked: motion.calibrate()
                         }
                         Button {
-                            text: "重新偵測 IP"
+                            text: qsTr("重新偵測 IP")
                             onClicked: server.refreshNetwork()
                         }
                     }
@@ -397,50 +397,61 @@ ApplicationWindow {
 
                     RowLayout {
                         Layout.fillWidth: true
-                        Label { text: "視覺與手感調整"; font.bold: true; font.pixelSize: 13; color: theme.foreground }
+                        Label { text: qsTr("視覺與手感調整"); font.bold: true; font.pixelSize: 13; color: theme.foreground }
                         Item { Layout.fillWidth: true }
-                        Button { text: "重設預設"; flat: true; onClicked: motion.resetDefaults() }
+                        Button { text: qsTr("重設預設"); flat: true; onClicked: motion.resetDefaults() }
                     }
 
                     RowLayout {
                         Layout.fillWidth: true
-                        Label { text: "圓點數量：" + (motion.dotPairs * 2) + " 顆"; Layout.preferredWidth: 120; font.pixelSize: 12 }
+                        Label { text: qsTr("圓點數量：%1 顆").arg(motion.dotPairs * 2); Layout.preferredWidth: 120; font.pixelSize: 12 }
                         Slider { Layout.fillWidth: true; from: 3; to: 6; stepSize: 1; value: motion.dotPairs; onMoved: motion.dotPairs = Math.round(value) }
                     }
                     RowLayout {
                         Layout.fillWidth: true
-                        Label { text: "圓點大小：" + motion.dotSize.toFixed(0) + " px"; Layout.preferredWidth: 120; font.pixelSize: 12 }
+                        Label { text: qsTr("圓點大小：%1 px").arg(motion.dotSize.toFixed(0)); Layout.preferredWidth: 120; font.pixelSize: 12 }
                         Slider { Layout.fillWidth: true; from: 6; to: 22; stepSize: 1; value: motion.dotSize; onMoved: motion.dotSize = value }
                     }
                     RowLayout {
                         Layout.fillWidth: true
-                        Label { text: "透明度：" + Math.round(motion.opacity * 100) + "%"; Layout.preferredWidth: 120; font.pixelSize: 12 }
+                        Label { text: qsTr("透明度：%1%").arg(Math.round(motion.opacity * 100)); Layout.preferredWidth: 120; font.pixelSize: 12 }
                         Slider { Layout.fillWidth: true; from: 0.2; to: 1.0; stepSize: 0.05; value: motion.opacity; onMoved: motion.opacity = value }
                     }
                     RowLayout {
                         Layout.fillWidth: true
-                        Label { text: "靈敏度：" + motion.sensitivity.toFixed(1) + "x"; Layout.preferredWidth: 120; font.pixelSize: 12 }
+                        Label { text: qsTr("靈敏度：%1x").arg(motion.sensitivity.toFixed(1)); Layout.preferredWidth: 120; font.pixelSize: 12 }
                         Slider { Layout.fillWidth: true; from: 0.3; to: 2.5; stepSize: 0.1; value: motion.sensitivity; onMoved: motion.sensitivity = value }
                     }
 
                     RowLayout {
                         Layout.fillWidth: true
                         CheckBox {
-                            text: "靜止 3 秒自動淡出"
+                            text: qsTr("靜止 3 秒自動淡出")
                             checked: motion.autoHide
                             onToggled: motion.autoHide = checked
                         }
                         CheckBox {
-                            text: theme.omarchy ? "使用 Omarchy 主題色" : "使用系統強調色"
+                            text: theme.omarchy ? qsTr("使用 Omarchy 主題色") : qsTr("使用系統強調色")
                             checked: motion.useAccentColor
                             onToggled: motion.useAccentColor = checked
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Label { text: qsTr("語言："); font.pixelSize: 12; color: theme.foreground }
+                        ComboBox {
+                            Layout.fillWidth: true
+                            model: [qsTr("跟隨系統"), qsTr("繁體中文"), qsTr("English")]
+                            currentIndex: motion.language === "system" ? 0 : motion.language === "zh-Hant" ? 1 : 2
+                            onActivated: (index) => { motion.language = ["system", "zh-Hant", "en"][index] }
                         }
                     }
                 }
             }
 
             Label {
-                text: "快捷鍵：Space 開關覆蓋層 · C 校正原點 · Q 離開"
+                text: qsTr("快捷鍵：Space 開關覆蓋層 · C 校正原點 · Q 離開")
                 font.pixelSize: 11
                 color: theme.muted
                 Layout.alignment: Qt.AlignHCenter
