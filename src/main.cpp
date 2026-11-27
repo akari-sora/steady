@@ -10,6 +10,7 @@
 #include <QEvent>
 #include <QGuiApplication>
 #include <QImage>
+#include <QLocale>
 #include <QMouseEvent>
 #include <QQuickImageProvider>
 #include <QQuickWindow>
@@ -18,6 +19,7 @@
 #include <QQuickStyle>
 #include <QSettings>
 #include <QThread>
+#include <QTranslator>
 #include <memory>
 
 namespace {
@@ -74,6 +76,15 @@ public:
         : m_theme(theme), m_motion(motion), m_server(server)
     {
         QQuickStyle::setStyle(QStringLiteral("Material"));
+    }
+
+    // Re-translate the live QML scene after a language switch. The
+    // translator must already be installed (see applyLanguage in main());
+    // when the panel is closed the engine is gone and the next show()
+    // picks the installed translator up automatically.
+    void retranslate()
+    {
+        if (m_qml) m_qml->retranslate();
     }
 
     bool show()
@@ -193,6 +204,7 @@ int main(int argc, char *argv[])
     QObject::connect(&engine, &MotionEngine::modeChanged, &settings, save);
     QObject::connect(&engine, &MotionEngine::simPresetChanged, &settings, save);
     QObject::connect(&engine, &MotionEngine::visualsChanged, &settings, save);
+    QObject::connect(&engine, &MotionEngine::languageChanged, &settings, save);
     const QString sourceLockKey = QStringLiteral("sourceLock");
     options.sourceLockEnabled = !parser.isSet(noSourceLock) && settings.value(sourceLockKey, true).toBool();
     SensorServer server(&engine, options);
@@ -203,6 +215,36 @@ int main(int argc, char *argv[])
     OverlayStrip rightStrip(OverlayStrip::Side::Right, &engine, &theme);
 
     ControlPanel panel(theme, engine, server);
+
+    // Language: "en" loads the embedded English catalogue, "zh-Hant" uses
+    // the zh-TW source strings, "system" follows QLocale::system() (English
+    // only when the system locale is English, otherwise zh-TW).
+    QTranslator translator;
+    const auto effectiveLanguage = [](const QString &code) {
+        if (code == QLatin1String("en")) return QStringLiteral("en");
+        if (code == QLatin1String("zh-Hant")) return QStringLiteral("zh-Hant");
+        return QLocale::system().language() == QLocale::English ? QStringLiteral("en")
+                                                                 : QStringLiteral("zh-Hant");
+    };
+    const auto applyLanguage = [&](const QString &code) {
+        const QString effective = effectiveLanguage(code);
+        if (effective == QLatin1String("en")) {
+            if (translator.load(QStringLiteral("steady_en"), QStringLiteral(":/i18n"))) {
+                app.installTranslator(&translator);
+            } else {
+                qWarning("Could not load English translation");
+            }
+        } else {
+            app.removeTranslator(&translator);
+        }
+        server.setLanguage(effective);
+        engine.retranslate();
+        panel.retranslate();
+    };
+    applyLanguage(engine.language());
+    QObject::connect(&engine, &MotionEngine::languageChanged,
+                     [&]() { applyLanguage(engine.language()); });
+
     if (!ownsControl || !control.listen("pnq", [&](char request) {
         if (request == 'q') app.quit();
         if (request == 'p' && !panel.show()) qWarning("Could not load the Steady control panel");
