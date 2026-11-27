@@ -131,6 +131,10 @@ By default the receiver locks to the IP address of the first phone that sends a 
 
 The source lock prevents accidental cross-talk and casual interference; it is not authentication. UDP source addresses can be spoofed. A manual release ignores the released address for about 10 seconds (or until another address claims the lock), but it cannot stop a forged address.
 
+#### Language 語言
+
+The desktop UI is Traditional Chinese by default with an English translation. Pick **跟隨系統** (Follow System), **繁體中文** or **English** from the language selector in the control panel (Visual Tuning card); the choice is saved in `settings.ini` and applies immediately, including the phone pairing page. The Android sender follows the system language (Traditional Chinese / English).
+
 #### HTTPS and pairing
 
 Steady uses the `openssl` executable to generate a self-signed certificate and the Qt TLS backend to serve HTTPS. It searches `PATH` and then the Git for Windows and OpenSSL-Win64 install directories on Windows. Set `STEADY_OPENSSL` to choose a different executable. An empty value disables HTTPS. UDP ingest and discovery remain available when HTTPS is disabled or TLS fails. The desktop and CLI both accept `--no-https`, `--https-port` and `--udp-port`.
