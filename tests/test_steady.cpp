@@ -169,7 +169,7 @@ void testUdpParsing()
     QFile qml(QStringLiteral(":/Main.qml"));
     expect(qml.open(QIODevice::ReadOnly), "Control panel QML is available to the tests");
     const QByteArray source = qml.readAll();
-    const auto labelStart = source.indexOf("+ motion.imuSource");
+    const auto labelStart = source.indexOf(".arg(motion.imuSource)");
     const auto nextLabel = source.indexOf("Label {", labelStart + 1);
     expect(labelStart >= 0 && nextLabel > labelStart
                && source.mid(labelStart, nextLabel - labelStart).contains("textFormat: Text.PlainText"),
