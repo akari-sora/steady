@@ -29,8 +29,10 @@ RESOURCES += src/resources.qrc
 # Translations: zh-TW is the source language (all qsTr()/tr() strings).
 # The English catalogue is embedded into the binary as :/i18n/steady_en.qm
 # (Qt 6.10) and loaded by main() when the language setting asks for it.
+# NOTE: lrelease must be set — embed_translations alone does not generate the
+# .qm file (qmake only loads lrelease.prf when CONFIG contains lrelease).
 TRANSLATIONS += translations/steady_en.ts
-CONFIG += embed_translations
+CONFIG += lrelease embed_translations
 
 DESTDIR = .
 OBJECTS_DIR = obj/gui
