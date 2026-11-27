@@ -78,6 +78,12 @@ public:
     QString lockedSource() const;
     Q_INVOKABLE bool releaseSource();
 
+    // Effective UI language for the pairing page ("zh-Hant" or "en"); set by
+    // main() whenever the language setting changes. The page strings use
+    // tr(), so they follow the installed translator at request time.
+    void setLanguage(const QString &language) { m_language = language; }
+    QString language() const { return m_language; }
+
     Q_INVOKABLE void refreshNetwork();
 
 signals:
@@ -142,6 +148,7 @@ private:
 
     QString m_lanIp;
     QString m_tailscaleIp;
+    QString m_language = QStringLiteral("zh-Hant");
     int m_qrRevision = 0;
     bool m_useTailscaleQr = false;
     quint16 m_httpsPort;
