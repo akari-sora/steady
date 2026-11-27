@@ -29,12 +29,21 @@ public final class DeepLinkRequest {
      * The dialog must show this text. A host-only sentence does not disclose lan or ts.
      */
     public String confirmMessage(String curHost, String curPort, String curLan, String curTs) {
+        return confirmMessage(curHost, curPort, curLan, curTs, "(空)");
+    }
+
+    /**
+     * Same message, with a caller-supplied (localised) label for empty fields.
+     * The activity passes {@code getString(R.string.empty_label)} here.
+     */
+    public String confirmMessage(String curHost, String curPort, String curLan, String curTs,
+                                 String emptyLabel) {
         if (!ok()) return "";
         StringBuilder sb = new StringBuilder();
-        if (host != null) line(sb, "host", curHost, host);
-        if (port > 0) line(sb, "port", curPort, String.valueOf(port));
-        if (lan != null) line(sb, "lan", curLan, lan);
-        if (ts != null) line(sb, "ts", curTs, ts);
+        if (host != null) line(sb, "host", curHost, host, emptyLabel);
+        if (port > 0) line(sb, "port", curPort, String.valueOf(port), emptyLabel);
+        if (lan != null) line(sb, "lan", curLan, lan, emptyLabel);
+        if (ts != null) line(sb, "ts", curTs, ts, emptyLabel);
         return sb.toString();
     }
 
@@ -53,9 +62,10 @@ public final class DeepLinkRequest {
         return disclosed(confirmMessage(curHost, curPort, curLan, curTs));
     }
 
-    private static void line(StringBuilder sb, String name, String before, String after) {
+    private static void line(StringBuilder sb, String name, String before, String after,
+                             String emptyLabel) {
         String from = before == null ? "" : before.trim();
-        if (from.isEmpty()) from = "(空)";
+        if (from.isEmpty()) from = emptyLabel;
         sb.append(name).append(": ").append(from).append(" → ").append(after).append('\n');
     }
 
